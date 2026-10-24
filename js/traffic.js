@@ -1420,6 +1420,7 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
       if (d < rMin || d > rMax || (protectView && nearView(x, z, v.half + 4, VEHICLE_SPAWN_DISTANCE))) continue;
       if (player.active && Math.hypot(x - player.x, z - player.z) < 25) continue;
       if (!laneClear(e.occ[lane], s, v.half + 8)) continue;
+      if (movers.some((o) => Math.abs(o.x - x) < o.halfL + v.half + 8 && Math.abs(o.z - z) < o.halfL + v.half + 8)) continue; // not on a streetcar
       place(v, e, lane, s);
       return true;
     }
@@ -2150,7 +2151,7 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
 }
 
 // ============================================================================
-// AMBIENT EXPRESSWAY TRAFFIC (the Gardiner Expressway on its viaduct)
+// AMBIENT EXPRESSWAY TRAFFIC (the Gardiner Expressway on its viaduct, the Don Valley Parkway)
 // ============================================================================
 // The shore highways city-grid.js lays along both rivers are not part of the road graph, so a lighter model fills
 // them: cars follow each lane's centre line and keep their distance with the IDM. Nobody changes lanes, so the order
@@ -2325,6 +2326,31 @@ function createHighwayTraffic(scene, lanes) {
     return null;
   }
 
+  // Nobody drives through anybody: the player (on foot, by bike or car) is pushed out of a highway car's box along its
+  // shallower side, and slows
+  function bump(c, entity, mode) {
+    const r = mode === 'car' ? 1.6 : mode === 'cyclist' ? 0.8 : 0.45;
+    const p = entity.position;
+    const dx = p.x - c.x;
+    const dz = p.z - c.z;
+    const cs = Math.cos(c.yaw), sn = Math.sin(c.yaw);
+    const lx = dx * cs - dz * sn; // across
+    const lz = dx * sn + dz * cs; // along
+    const px = 0.95 + r - Math.abs(lx);
+    const pz = HWY_CAR_LEN / 2 + r - Math.abs(lz);
+    if (px <= 0 || pz <= 0) return;
+    if (px < pz) {
+      const k = Math.sign(lx) || 1;
+      p.x += cs * px * k;
+      p.z -= sn * px * k;
+    } else {
+      const k = Math.sign(lz) || 1;
+      p.x += sn * pz * k;
+      p.z += cs * pz * k;
+      if (entity.speed) entity.speed = Math.min(Math.abs(entity.speed), c.v) * Math.sign(entity.speed) * 0.8;
+    }
+  }
+
   function update(dt, camera, entity, mode) {
     // 1. Car following (IDM) in every lane, the player counting as a leader
     const pl = entity && mode !== 'helicopter' ? {
@@ -2396,6 +2422,7 @@ function createHighwayTraffic(scene, lanes) {
       c.z = z;
       c.yaw = yaw;
       c.placed = true;
+      if (pl && Math.abs(x - pl.x) < 7 && Math.abs(z - pl.z) < 7 && Math.abs(y - pl.y) < 2.5) bump(c, entity, mode);
       const dx = x - cam.x;
       const dz = z - cam.z;
       const dy = y - cam.y;

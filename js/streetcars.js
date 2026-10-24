@@ -1,7 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { color, mix, step, smoothstep, positionGeometry, normalGeometry, float } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { RAILS, FURNITURE, DETAIL, blockAt, signalPhase } from './city-config.js';
+import { RAILS, ROADS, FURNITURE, DETAIL, blockAt, signalPhase } from './city-config.js';
 import { cityUniforms } from './tsl-materials.js';
 
 // js/streetcars.js
@@ -244,14 +244,59 @@ function createStreetcars(scene, trafficSystem) {
   const tracks = buildTracks();
   buildTrackwork(group, tracks);
 
-  // Direction of travel on each track: the real stops along it face its way (a stop stands to the right of the track
-  // in the direction of travel); where a track has none, the right-hand side of the street decides (the track lies
-  // right of the street's middle)
+  // Direction of travel on each track: right-hand traffic's. Where the track lies off the middle of its street (two
+  // tracks), the side it lies on; on the middle (single track, loops), the way the traffic drives in the lanes it
+  // shares; failing both, the real stops along it (a stop stands to the right of the track in the direction of travel)
   const tmp = { x: 0, z: 0, yaw: 0 };
   const stops = FURNITURE.stops.filter((s) => s.streetcar);
+  const edges = (trafficSystem && trafficSystem.network && trafficSystem.network.edges) || [];
+  const CELL = 50;
+  const streetSegs = new Map();
+  for (const r of ROADS) {
+    for (let i = 0; i + 1 < r.pts.length; i++) {
+      const a = r.pts[i], b = r.pts[i + 1];
+      const L = Math.hypot(b.x - a.x, b.z - a.z);
+      if (L < 1) continue;
+      const seg = { ax: a.x, az: a.z, ux: (b.x - a.x) / L, uz: (b.z - a.z) / L, L, oneway: r.dir !== 0 };
+      for (let ix = Math.floor((Math.min(a.x, b.x) - 12) / CELL); ix <= Math.floor((Math.max(a.x, b.x) + 12) / CELL); ix++) {
+        for (let iz = Math.floor((Math.min(a.z, b.z) - 12) / CELL); iz <= Math.floor((Math.max(a.z, b.z) + 12) / CELL); iz++) {
+          const k = ix * 10000 + iz;
+          if (!streetSegs.has(k)) streetSegs.set(k, []);
+          streetSegs.get(k).push(seg);
+        }
+      }
+    }
+  }
   for (const t of tracks) {
-    let vote = 0;
-    for (const st of stops) {
+    let side = 0;
+    let lanes = 0;
+    for (let s = 10; s < t.len - 10; s += 20) {
+      sample(t, s, tmp);
+      const fx = Math.sin(tmp.yaw), fz = Math.cos(tmp.yaw);
+      // the nearest street centre line running alongside
+      let best = null, bestD = 12;
+      for (const g of streetSegs.get(Math.floor(tmp.x / CELL) * 10000 + Math.floor(tmp.z / CELL)) || []) {
+        if (Math.abs(g.ux * fx + g.uz * fz) < 0.9) continue;
+        const px = tmp.x - g.ax, pz = tmp.z - g.az;
+        const a = px * g.ux + pz * g.uz;
+        if (a < 0 || a > g.L) continue;
+        const lat = px * -g.uz + pz * g.ux; // right of the street's way (x east, z south)
+        if (Math.abs(lat) < bestD) {
+          bestD = Math.abs(lat);
+          best = { g, lat };
+        }
+      }
+      if (best && !best.g.oneway && Math.abs(best.lat) > 0.8) side += Math.sign(best.lat) * Math.sign(best.g.ux * fx + best.g.uz * fz);
+      for (const e of edges) {
+        const px = tmp.x - e.sx, pz = tmp.z - e.sz;
+        const a = px * e.dx + pz * e.dz;
+        if (a < 0 || a > e.len) continue;
+        const lat = px * e.rx + pz * e.rz;
+        if (e.lanes.some((o) => Math.abs(lat - o) < 1.6)) lanes += Math.sign(fx * e.dx + fz * e.dz);
+      }
+    }
+    let vote = Math.abs(side) >= 3 ? side : lanes;
+    if (!vote) for (const st of stops) {
       const { s, d } = project(t, st.x, st.z);
       if (d > 14) continue;
       sample(t, s, tmp);
@@ -360,7 +405,7 @@ function createStreetcars(scene, trafficSystem) {
       if (side > HALF_W + halfW + 0.35) return;
       best = Math.min(best, ahead - half);
     };
-    for (const v of others) if (v.placed) test(v.x, v.z, v.half || 2.3, v.halfWidth || 0.9);
+    for (const v of others) if (v.edge) test(v.x, v.z, v.half || 2.3, v.halfWidth || 0.9);
     for (const o of cars) {
       if (o === car || o.track !== t) continue;
       const tail = o.s - CAR_LEN;
@@ -401,7 +446,7 @@ function createStreetcars(scene, trafficSystem) {
         }
         stopD = Math.min(stopD, phaseAhead(car, elapsed));
         const near = Math.abs(sample(t, car.s, tmp).x - camX) < 500 && Math.abs(tmp.z - camZ) < 500;
-        if (near) stopD = Math.min(stopD, blockedAhead(car, 40, others, ground) - 4);
+        if (near) stopD = Math.min(stopD, blockedAhead(car, 75, others, ground) - 4);
       }
       if (stopD < Infinity) target = Math.min(target, Math.sqrt(Math.max(0, 2 * DECEL * Math.max(0, stopD))));
       if (car.speed < target) car.speed = Math.min(target, car.speed + ACCEL * dt);

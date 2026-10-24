@@ -25,6 +25,7 @@ import {
 } from 'three/tsl';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { cityUniforms } from './tsl-materials.js';
+import { expresswayNearRect } from './expressways.js';
 import { MAINLAND_POLYGONS, ISLAND_POLYGONS, RUNWAYS, CITY_LAND, LL, POINTS, landDistance } from './city-config.js';
 
 // js/surroundings.js
@@ -509,6 +510,7 @@ function generateBuildings() {
       if (!onLand(cx, cz) || !onLand(x0, z0) || !onLand(x1, z1) || !onLand(x0, z1) || !onLand(x1, z0)) continue;
       if (landDistance(cx, cz) > -60) continue; // the detailed downtown (and a margin around it)
       if (excluded(cx, cz, 60)) continue;
+      if (expresswayNearRect(x0, z0, x1, z1, 10)) continue; // the DVP & the ramps
       // on an arterial? (the concession grid: the blocks touching it stay back from its wider roadway)
       const nearArt = (v, step) => {
         const f = ((v % step) + step) % step;

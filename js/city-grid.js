@@ -4,7 +4,6 @@ import {
   CITY_BOUNDS,
   CITY_LAND,
   BLOCKS,
-  EXPRESSWAYS,
   RAILS,
   DETAIL,
   landDistance,
@@ -22,6 +21,7 @@ import {
   createParkLampGlobeMaterial,
   createParkLampPoolMaterial
 } from './tsl-materials.js';
+import { buildExpressways } from './expressways.js';
 
 // Live construction data consumed by the building and street-detail builders after buildCityGrid().
 let parkTreeSites;
@@ -738,10 +738,10 @@ function buildCityGrid(scene) {
   }
 
   // =========================================================================
-  // 7. THE GARDINER EXPRESSWAY: each carriageway's deck on single-column bents ~14 m over Lake Shore Blvd, with Jersey
-  //    barriers, from the Exhibition grounds past the Don; its lanes carry the ambient highway traffic (traffic.js)
+  // 7. THE EXPRESSWAYS (expressways.js): the Gardiner's deck on single-column bents ~14 m over Lake Shore Blvd, the Don
+  //    Valley Parkway and the ramps, all drivable; their lanes carry the ambient highway traffic (traffic.js)
   // =========================================================================
-  viaduct = buildGardiner(group, highwayLanes);
+  viaduct = buildExpressways(group, highwayLanes);
 
   // Instanced park & promenade furniture: slatted benches (seat facing +z) & park lamps with globes
   if (benchMatrices.length) {
@@ -809,88 +809,6 @@ function buildCityGrid(scene) {
   const sidewalks = roadSidewalks;
   const colliders = viaduct.colliders;
   return { group, sidewalks, footprints, highwayLanes, colliders };
-}
-
-// =====================================================================================================================
-// THE GARDINER EXPRESSWAY
-// =====================================================================================================================
-// Each carriageway (OpenStreetMap: one one-way line per direction) within reach of downtown: a concrete box deck at
-// DECK_Y with barrier walls, carried every ~32 m by a column & cap beam. Returns { boxes } (oriented boxes buildings keep
-// clear of) and { colliders } (the columns, for the player), and pushes the lanes for the ambient traffic.
-function buildGardiner(group, highwayLanes) {
-  const DECK_Y = 14.0;
-  const DECK_T = 1.5;
-  const concrete = new THREE.MeshStandardNodeMaterial({ color: 0x9a968d, roughness: 0.86 });
-  const asphalt = new THREE.MeshStandardNodeMaterial({ color: 0x2c2d30, roughness: 0.82 });
-  const boxes = [];
-  const colliders = [];
-  const deckGeos = [];
-  const topGeos = [];
-  const pad = 900;
-  const nearDowntown = (p) => p.x > DETAIL.x0 - pad && p.x < DETAIL.x1 + pad && p.z > DETAIL.z0 && p.z < DETAIL.z1 + pad;
-  const boxGeo = (cx, cy, cz, w, h, L, yaw) => new THREE.BoxGeometry(w, h, L).rotateY(yaw).translate(cx, cy, cz);
-  for (const e of EXPRESSWAYS) {
-    if (e.name !== 'Gardiner Expressway') continue;
-    // the run of the carriageway near downtown, resampled every ~8 m
-    const src = e.pts.filter(nearDowntown);
-    if (src.length < 2) continue;
-    const pts = [src[0]];
-    for (let i = 1; i < src.length; i++) {
-      const a = pts[pts.length - 1], b = src[i];
-      const L = Math.hypot(b.x - a.x, b.z - a.z);
-      if (L > 400) break; // the polyline left the window and came back: keep the first run
-      const n = Math.max(1, Math.ceil(L / 8));
-      for (let k = 1; k <= n; k++) pts.push({ x: a.x + ((b.x - a.x) * k) / n, z: a.z + ((b.z - a.z) * k) / n });
-    }
-    const W = e.w;
-    let run = 0;
-    for (let i = 0; i + 1 < pts.length; i++) {
-      const a = pts[i], b = pts[i + 1];
-      const L = Math.hypot(b.x - a.x, b.z - a.z);
-      if (L < 0.2) continue;
-      const yaw = Math.atan2(b.x - a.x, b.z - a.z);
-      const cx = (a.x + b.x) / 2, cz = (a.z + b.z) / 2;
-      deckGeos.push(boxGeo(cx, DECK_Y - DECK_T / 2, cz, W, DECK_T, L + 0.6, yaw));
-      topGeos.push(boxGeo(cx, DECK_Y + 0.02, cz, W - 1.0, 0.04, L + 0.6, yaw));
-      const ux = (b.x - a.x) / L, uz = (b.z - a.z) / L;
-      for (const s of [-1, 1]) {
-        const ox = uz * s * (W / 2 - 0.25), oz = -ux * s * (W / 2 - 0.25);
-        deckGeos.push(boxGeo(cx + ox, DECK_Y + 0.45, cz + oz, 0.45, 0.9, L + 0.6, yaw));
-      }
-      boxes.push({ cx, cz, ux, uz, hl: L / 2 + 1, hw: W / 2 + 2 });
-      run += L;
-      if (run >= 32) {
-        run = 0;
-        const h = DECK_Y - DECK_T;
-        deckGeos.push(boxGeo(b.x, h / 2, b.z, 1.8, h, 1.6, yaw));
-        deckGeos.push(boxGeo(b.x, h - 0.6, b.z, W - 2, 1.2, 2.0, yaw));
-        colliders.push({ minX: b.x - 1.4, maxX: b.x + 1.4, minZ: b.z - 1.4, maxZ: b.z + 1.4, maxY: h });
-      }
-    }
-    // lanes, right of the centreline in the direction of travel (the way's direction)
-    for (let k = 0; k < e.lanes; k++) {
-      const off = (k - (e.lanes - 1) / 2) * 3.6;
-      const lane = [];
-      for (let i = 0; i < pts.length; i++) {
-        const a = pts[Math.max(0, i - 1)], b = pts[Math.min(pts.length - 1, i + 1)];
-        const L = Math.hypot(b.x - a.x, b.z - a.z) || 1;
-        const rx = -(b.z - a.z) / L, rz = (b.x - a.x) / L; // right of travel (x east, z south: right = (-dz, dx))
-        lane.push(new THREE.Vector3(pts[i].x + rx * off, DECK_Y + 0.05, pts[i].z + rz * off));
-      }
-      highwayLanes.push({ pts: lane, speed: 22 + k * 1.5 });
-    }
-  }
-  const add = (geos, mat, cast) => {
-    for (let i = 0; i < geos.length; i += 500) {
-      const m = new THREE.Mesh(mergeGeometries(geos.slice(i, i + 500), false), mat);
-      m.castShadow = cast;
-      m.receiveShadow = true;
-      group.add(m);
-    }
-  };
-  add(deckGeos, concrete, true);
-  add(topGeos, asphalt, false);
-  return { boxes, colliders };
 }
 
 export {

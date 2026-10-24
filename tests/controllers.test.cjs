@@ -35,6 +35,7 @@ function keyboardHarness(city = {}) {
       'three/webgpu': {},
       './city-config.js': config,
       './tsl-materials.js': {},
+      './expressways.js': { surfaceAt: () => null, clampToSegment: (seg, x, z) => ({ x, z, y: 0 }) },
       './actor-models.js': {},
       './pedestrians.js': {},
       './vehicle-lights.js': {}

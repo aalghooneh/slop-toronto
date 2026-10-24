@@ -1,5 +1,6 @@
 import * as THREE from 'three/webgpu';
 import { CITY_BOUNDS, isTypingInField, blockAt, pushOntoLand, SPAWN } from './city-config.js';
+import { surfaceAt, clampToSegment } from './expressways.js';
 import { cityUniforms, createCarPaintMaterial, createContactShadowMaterial } from './tsl-materials.js';
 import {
   BODY_SPECS,
@@ -55,7 +56,7 @@ function driveSpeed(speed, throttle, boost, dt, drive) {
 }
 
 // Walking surface for the player's pedestrian (its rig samples it around its feet)
-const personGround = (controllers, x, z) => controllers.getGroundHeight(x, z, 'person');
+const personGround = (controllers, x, z) => controllers.getGroundHeight(x, z, 'person', controllers.entities.person.position.y);
 
 function createOntarioLicensePlateTexture() {
   const c = document.createElement('canvas');
@@ -230,6 +231,7 @@ class ThirdPersonControllerManager {
     const heli = this.activeMode === 'helicopter';
     const altitude = heli ? Math.max(0.25, Math.min(380, savedAltitude ?? Math.max(92, ent.position.y))) : 0;
     const destination = this.findTeleportPosition(x, z, heading, altitude);
+    ent._deckSeg = null;
     if (destination) {
       ent.position.x = destination.x;
       ent.position.z = destination.z;
@@ -721,11 +723,41 @@ class ThirdPersonControllerManager {
     return !!blockAt(x, z);
   }
 
-  getGroundHeight(x, z, mode = 'person') {
-    if (mode === 'person') {
-      return this.isPointOnSidewalk(x, z) ? CITY_BOUNDS.sidewalkHeight : 0.0;
+  // The ground under (x, z) for something now at height y: an expressway's deck or ramp (expressways.js) reached
+  // from there, else the street or the sidewalk
+  getGroundHeight(x, z, mode = 'person', y = 0) {
+    const base = mode === 'person' && this.isPointOnSidewalk(x, z) ? CITY_BOUNDS.sidewalkHeight : 0.0;
+    const deck = surfaceAt(x, z, y + 1.0);
+    return deck ? Math.max(base, deck.y) : base;
+  }
+
+  // Keeps `entity` (at pos, its new position; pos.y still last frame's height) on the expressways: true while it is on
+  // a deck or a ramp, or held there by the barriers having run into its edge (or an end that leads nowhere), so that
+  // the bounds of downtown's ground don't apply. Stepping off at grade onto downtown's streets lets go.
+  followDeck(pos, radius, entity) {
+    const here = surfaceAt(pos.x, pos.z, pos.y + 1.0);
+    if (here && here.y > pos.y - 1.0) {
+      entity._deckSeg = here.seg;
+      return true;
     }
-    return 0.0;
+    const seg = entity._deckSeg;
+    if (!seg) return false;
+    if (pos.y < 1.0) {
+      const inBounds = pos.x > CITY_BOUNDS.minX && pos.x < CITY_BOUNDS.maxX && pos.z > CITY_BOUNDS.minZ && pos.z < CITY_BOUNDS.maxZ;
+      const p = inBounds ? pushOntoLand(pos.x, pos.z, 8.0) : null;
+      if (p && p.x === pos.x && p.z === pos.z) {
+        entity._deckSeg = null;
+        return false;
+      }
+    }
+    const c = clampToSegment(seg, pos.x, pos.z, radius * 0.6);
+    pos.x = c.x;
+    pos.z = c.z;
+    // scraping along the barrier costs a little speed, running into it head on nearly all
+    if (entity.speed) entity.speed *= Math.max(0.15, Math.abs(Math.sin(entity.heading) * seg.ux + Math.cos(entity.heading) * seg.uz)) * 0.99;
+    if (entity.vx) entity.vx *= 0.5;
+    if (entity.vz) entity.vz *= 0.5;
+    return true;
   }
 
   // The colliders whose bounds come within `r` of (x, z), in their original order. They never move, so they are
@@ -768,12 +800,15 @@ class ThirdPersonControllerManager {
   }
 
   resolveHorizontalCollision(pos, radius, yHeight = 1.0, carEntity = null, entity = carEntity) {
-    // Downtown's ground (the helicopter may roam out over the lake & the rest of the city)
+    // Downtown's ground or the expressways (the helicopter may roam out over the lake & the rest of the city)
     const heli = this.activeMode === 'helicopter';
-    const m = heli ? 6000 : 0;
-    pos.x = Math.max(CITY_BOUNDS.minX - m, Math.min(CITY_BOUNDS.maxX + m, pos.x));
-    pos.z = Math.max(CITY_BOUNDS.minZ - m, Math.min(CITY_BOUNDS.maxZ + m, pos.z));
-    if (!heli) {
+    const onDeck = !heli && entity && this.followDeck(pos, radius, entity);
+    if (!onDeck) {
+      const m = heli ? 6000 : 0;
+      pos.x = Math.max(CITY_BOUNDS.minX - m, Math.min(CITY_BOUNDS.maxX + m, pos.x));
+      pos.z = Math.max(CITY_BOUNDS.minZ - m, Math.min(CITY_BOUNDS.maxZ + m, pos.z));
+    }
+    if (!heli && !onDeck) {
       const p = pushOntoLand(pos.x, pos.z, 8.0);
       if (p.x !== pos.x || p.z !== pos.z) {
         pos.x = p.x;
@@ -913,7 +948,7 @@ class ThirdPersonControllerManager {
   // pedals, helmet on its head
   poseCharacters(dt) {
     const p = this.entities.person;
-    const air = p.position.y - this.getGroundHeight(p.position.x, p.position.z, 'person');
+    const air = p.position.y - this.getGroundHeight(p.position.x, p.position.z, 'person', p.position.y);
     p.rig.update(dt, p.position.x, p.position.z, p.heading, personGround, this, air > 0.02 ? air : 0);
     p.crowd.begin();
     p.crowd.add(p.rig, 0);
@@ -995,9 +1030,9 @@ class ThirdPersonControllerManager {
 
     p.position.x += Math.sin(p.heading) * p.speed * dt;
     p.position.z += Math.cos(p.heading) * p.speed * dt;
-    this.resolveHorizontalCollision(p.position, 0.48, p.position.y + 1.0);
+    this.resolveHorizontalCollision(p.position, 0.48, p.position.y + 1.0, null, p);
 
-    const groundY = this.getGroundHeight(p.position.x, p.position.z, 'person');
+    const groundY = this.getGroundHeight(p.position.x, p.position.z, 'person', p.position.y);
     if (this.keys.up && p.position.y <= groundY + 0.02) {
       p.verticalVel = 5.2;
     }
@@ -1046,8 +1081,8 @@ class ThirdPersonControllerManager {
     c.vx *= tireGripDamp;
     c.vz *= tireGripDamp;
 
-    this.resolveHorizontalCollision(c.position, 1.35, 1.0, c);
-    c.position.y = this.getGroundHeight(c.position.x, c.position.z, 'car');
+    this.resolveHorizontalCollision(c.position, 1.35, c.position.y + 1.0, c);
+    c.position.y = this.getGroundHeight(c.position.x, c.position.z, 'car', c.position.y);
 
     // 3-DOF Spring-Damper Chassis Suspension (Pitch, Roll & Vertical Heave)
     const targetPitch = -Math.max(-1, Math.min(1, acceleration / CAR_DRIVE.acceleration)) * 0.026;
@@ -1099,8 +1134,8 @@ class ThirdPersonControllerManager {
 
     b.position.x += Math.sin(b.heading) * b.speed * dt;
     b.position.z += Math.cos(b.heading) * b.speed * dt;
-    this.resolveHorizontalCollision(b.position, 0.65, 1.0, null, b);
-    b.position.y = this.getGroundHeight(b.position.x, b.position.z, 'cyclist');
+    this.resolveHorizontalCollision(b.position, 0.65, b.position.y + 1.0, null, b);
+    b.position.y = this.getGroundHeight(b.position.x, b.position.z, 'cyclist', b.position.y);
 
     const targetLean = -turnInput * Math.min(1.0, Math.abs(b.speed) / 9.0) * 0.34;
     b.leanAngle += (targetLean - b.leanAngle) * Math.min(1, dt * 9);
