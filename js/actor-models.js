@@ -305,6 +305,40 @@ const BODY_SPECS = {
   }
 };
 BODY_SPECS.taxi = Object.assign({}, BODY_SPECS.sedan, { name: 'taxi', sign: true });
+// The player's car: a Buick Envision, the compact crossover (4.64 m long, 1.88 m wide, 1.64 m tall, 2.83 m wheelbase on
+// 19" wheels), lower & sleeker than the generic SUV: the roof falls away behind the B pillar to a raked tailgate, slim
+// LED headlamps over the tall wide grille, a thin taillamp strip, dark lower cladding
+BODY_SPECS.envision = Object.assign({}, BODY_SPECS.suv, {
+  name: 'envision',
+  zFront: 2.32,
+  zRear: -2.32,
+  wheelRadius: 0.37,
+  wheelZ: 1.415,
+  wheelX: 0.82,
+  halfWidth: [[2.32, 0.918], [1.415, 0.932], [0, 0.94], [-1.415, 0.936], [-2.32, 0.925]],
+  sill: [[2.32, 0.37], [1.2, 0.33], [-1.2, 0.33], [-2.32, 0.4]],
+  shoulder: [[2.32, 0.76], [0, 0.8], [-2.32, 0.86]],
+  edge: [[2.1, 0.94], [1.5, 1.0], [0.85, 1.06], [0.6, 1.08], [-1.0, 1.1], [-2.0, 1.12], [-2.32, 1.12]],
+  cabin: Object.assign({}, BODY_SPECS.suv.cabin, {
+    cowl: 0.78,
+    roofFront: 0.02,
+    roofRear: -1.62,
+    deck: -2.16,
+    roofY: [[0.02, 1.62], [-0.7, 1.645], [-1.62, 1.58]],
+    rail: [0.69, 0.66],
+    pillars: [-0.32, -1.16]
+  }),
+  doors: [0.76, -0.32, -1.16],
+  headlight: [0.62, 0.86, 0.22, 0.04],
+  taillight: [0.6, 0.98, 0.3, 0.04],
+  grille: [0.74, 0.4, 0.13],
+  intake: [0.46, 0.46, 0.05],
+  plates: [0.56, 0.74],
+  bumperLine: [0.93, 0.82],
+  chrome: true,
+  cladding: 0.46,
+  rails: true
+});
 for (const spec of Object.values(BODY_SPECS)) {
   // Kept for code that places lamp flares: lamp heights (front, rear) and centres across the car
   spec.lamps = [spec.headlight[1], spec.taillight[1]];

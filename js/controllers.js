@@ -19,11 +19,14 @@ import { HEADLIGHTS, createVehicleHeadlight, placeVehicleHeadlight } from './veh
 // Sculpted, non-blocky GTA 6-style 3D models, animations, and physics controllers
 // for Third-Person Navigation:
 // 1. Person (Skinned Pedestrian: planted-footstep IK walk/run/jump, see pedestrians.js)
-// 2. Car (Aerodynamic Sculpted Toronto Taxi with Sloped Windshield & Clearcoat)
+// 2. Car (Lofted Buick Envision Crossover with Sloped Windshield & Clearcoat)
 // 3. Cyclist (Sculpted Road Cyclist with Drop-Bar Frame & Aero Helmet)
 // 4. Helicopter (Harbourfront Sightseeing Twin-Turbine Chopper)
 
 // Spawn on 5th Ave at 37th St, facing south down the avenue toward the Empire State Building (34th St)
+// Half width & half length of the player's car (the Buick Envision's body, actor-models.js BODY_SPECS.envision)
+const CAR_HALF_W = 0.94;
+const CAR_HALF_L = 2.32;
 const SPAWN_X = SPAWN.x; // Yonge St between Queen St and King St (city-config.js SPAWN)
 const SPAWN_Z = SPAWN.z - 12;
 const groundCollider = { type: 'ground' };
@@ -54,37 +57,6 @@ function driveSpeed(speed, throttle, boost, dt, drive) {
 // Walking surface for the player's pedestrian (its rig samples it around its feet)
 const personGround = (controllers, x, z) => controllers.getGroundHeight(x, z, 'person');
 
-function createTaxiDoorDecalTexture() {
-  const c = document.createElement('canvas');
-  c.width = 256;
-  c.height = 128;
-  const ctx = c.getContext('2d');
-  ctx.fillStyle = '#f5821f';
-  ctx.fillRect(0, 0, 256, 128);
-  // Black roundel with the cab's licence number
-  ctx.fillStyle = '#111317';
-  ctx.beginPath();
-  ctx.arc(58, 64, 42, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#f5821f';
-  ctx.font = '900 30px Inter, Arial, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText('416', 58, 66);
-  // TORONTO TAXI typography & fare
-  ctx.fillStyle = '#111317';
-  ctx.textAlign = 'left';
-  ctx.font = '900 24px Inter, Arial, sans-serif';
-  ctx.fillText('TORONTO TAXI', 104, 42);
-  ctx.font = '700 15px JetBrains Mono, monospace';
-  ctx.fillText('CAB 2417', 104, 68);
-  ctx.font = '600 13px Inter, Arial, sans-serif';
-  ctx.fillText('$4.25 INITIAL FARE', 104, 90);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
-
 function createOntarioLicensePlateTexture() {
   const c = document.createElement('canvas');
   c.width = 256;
@@ -100,7 +72,7 @@ function createOntarioLicensePlateTexture() {
   ctx.textAlign = 'center';
   ctx.fillText('ONTARIO', 128, 26);
   ctx.font = '900 46px JetBrains Mono, monospace';
-  ctx.fillText('TXAB 416', 128, 80);
+  ctx.fillText('CBXR 418', 128, 80);
   ctx.font = 'italic 600 13px Inter, Arial, sans-serif';
   ctx.fillText('YOURS TO DISCOVER', 128, 112);
   const tex = new THREE.CanvasTexture(c);
@@ -299,13 +271,13 @@ class ThirdPersonControllerManager {
     const car = this.activeMode === 'car';
     const radius = heli ? 4.5 : this.activeMode === 'person' ? 0.48 : 0.65;
     const sinH = Math.sin(heading), cosH = Math.cos(heading);
-    const extX = (car ? Math.abs(cosH) * 0.86 + Math.abs(sinH) * 2.18 : radius) + 0.1;
-    const extZ = (car ? Math.abs(sinH) * 0.86 + Math.abs(cosH) * 2.18 : radius) + 0.1;
+    const extX = (car ? Math.abs(cosH) * CAR_HALF_W + Math.abs(sinH) * CAR_HALF_L : radius) + 0.1;
+    const extZ = (car ? Math.abs(sinH) * CAR_HALF_W + Math.abs(cosH) * CAR_HALF_L : radius) + 0.1;
     const reach = Math.max(extX, extZ);
     const margin = heli ? 6000 : 0;
     const entity = this.getActiveEntity();
-    // Conservative body cylinders, including the taxi's corners, bicycle wheels and helicopter tail/rotor.
-    const body = { person: [0.48, 1.9], car: [2.4, 1.9], cyclist: [1.0, 1.9], helicopter: [6.2, 3.2] };
+    // Conservative body cylinders, including the car's corners, bicycle wheels and helicopter tail/rotor.
+    const body = { person: [0.48, 1.9], car: [2.5, 1.9], cyclist: [1.0, 1.9], helicopter: [6.2, 3.2] };
     const others = Object.values(this.entities).filter(e => e !== entity).map(e => ({
       x: e.position.x, z: e.position.z, radius: body[e.type][0],
       bottom: e.position.y - (e.type === 'helicopter' ? 0.7 : 0), top: e.position.y + body[e.type][1]
@@ -337,8 +309,8 @@ class ThirdPersonControllerManager {
         if (c.obb) {
           const o = c.obb, dx = p.x - o.cx, dz = p.z - o.cz;
           const ls = sinH * o.cs - cosH * o.sn, lc = sinH * o.sn + cosH * o.cs;
-          const ex = (car ? Math.abs(lc) * 0.86 + Math.abs(ls) * 2.18 : radius) + 0.1;
-          const ez = (car ? Math.abs(ls) * 0.86 + Math.abs(lc) * 2.18 : radius) + 0.1;
+          const ex = (car ? Math.abs(lc) * CAR_HALF_W + Math.abs(ls) * CAR_HALF_L : radius) + 0.1;
+          const ez = (car ? Math.abs(ls) * CAR_HALF_W + Math.abs(lc) * CAR_HALF_L : radius) + 0.1;
           if (Math.abs(dx * o.cs - dz * o.sn) >= o.hx + ex || Math.abs(dx * o.sn + dz * o.cs) >= o.hz + ez) continue;
         }
         return false;
@@ -399,42 +371,26 @@ class ThirdPersonControllerManager {
   }
 
   // =========================================================================
-  // 2. CAR (3D LOFTED SCULPTED TORONTO TAXI SEDAN)
+  // 2. CAR (3D LOFTED BUICK ENVISION CROSSOVER)
   // =========================================================================
   createCarEntity() {
     const root = new THREE.Group();
-    root.name = 'PlayerTaxiCar';
+    root.name = 'PlayerCar';
 
     const chassisPivot = new THREE.Group();
     root.add(chassisPivot);
 
-    const spec = BODY_SPECS.taxi;
-    const taxiLoftMat = createLoftedCarMaterial(spec, 0xf5821f);
+    const spec = BODY_SPECS.envision;
+    const carLoftMat = createLoftedCarMaterial(spec, 0x24405f); // Deep Azure Metallic
 
-    // 1. 3D Lofted Taxi Body + Curved Windscreens + Crowned Roof + Side Mirrors + Roof Sign
+    // 1. 3D Lofted Crossover Body + Curved Windscreens + Sloping Roof with Rails + Side Mirrors
     const carBodyGeo = buildCarGeometry(spec, false);
-    const carBodyMesh = new THREE.Mesh(carBodyGeo, taxiLoftMat);
+    const carBodyMesh = new THREE.Mesh(carBodyGeo, carLoftMat);
     carBodyMesh.castShadow = true;
     carBodyMesh.receiveShadow = true;
     chassisPivot.add(carBodyMesh);
 
-    // 2. Taxi side door decals (licence roundel & fare), hugging the curved front doors
-    const doorDecalTex = createTaxiDoorDecalTexture();
-    const doorDecalMat = new THREE.MeshStandardNodeMaterial({
-      map: doorDecalTex,
-      roughness: 0.24,
-      metalness: 0.34,
-      polygonOffset: true,
-      polygonOffsetFactor: -2,
-      polygonOffsetUnits: -2
-    });
-    const doorMid = (spec.doors[0] + spec.doors[1]) / 2;
-    for (const side of [-1, 1]) {
-      const decal = new THREE.Mesh(buildCarSidePatch(spec, side, doorMid - 0.36, doorMid + 0.36, 0.53, 0.81, 0.003), doorDecalMat);
-      chassisPivot.add(decal);
-    }
-
-    // 3. Ontario licence plates on the bumpers
+    // 2. Ontario licence plates on the bumpers
     const nyPlateTex = createOntarioLicensePlateTexture();
     const nyPlateMat = new THREE.MeshStandardNodeMaterial({ map: nyPlateTex, roughness: 0.28 });
     const rearPlate = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.14, 0.02), nyPlateMat);
@@ -445,10 +401,10 @@ class ThirdPersonControllerManager {
     frontPlate.position.set(0, spec.plates[0], spec.zFront + 0.006);
     chassisPivot.add(frontPlate);
 
-    // 3b. Brake lights, CHMSL & turn signals are lit by the taxi material from its carState uniform (see updateCar)
-    const carState = taxiLoftMat.userData.carState;
+    // 2b. Brake lights, CHMSL & turn signals are lit by the body material from its carState uniform (see updateCar)
+    const carState = carLoftMat.userData.carState;
 
-    // 4. Steerable & Spinning 3D LatheGeometry Tyres + Recessed 5-Spoke Alloy Wheels
+    // 3. Steerable & Spinning 3D LatheGeometry Tyres + Recessed 5-Spoke Alloy Wheels
     const leftWheelGeo = buildSteerableWheelGeo(spec, -1);
     const rightWheelGeo = buildSteerableWheelGeo(spec, 1);
 
@@ -462,7 +418,7 @@ class ThirdPersonControllerManager {
     for (const wc of wheelCoords) {
       const steerPivot = new THREE.Group();
       steerPivot.position.set(wc.side * spec.wheelX, spec.wheelRadius, wc.z);
-      const tire = new THREE.Mesh(wc.side < 0 ? leftWheelGeo : rightWheelGeo, taxiLoftMat);
+      const tire = new THREE.Mesh(wc.side < 0 ? leftWheelGeo : rightWheelGeo, carLoftMat);
       tire.castShadow = true;
       tire.receiveShadow = true;
       steerPivot.add(tire);
@@ -470,8 +426,8 @@ class ThirdPersonControllerManager {
       wheels.push({ steerPivot, tire, isFront: wc.isFront });
     }
 
-    // 5. Soft Under-Car Contact Shadow (AO) + Clustered Dual LED Headlight SpotLights & Rear Brake PointLight
-    const carShadowGeo = new THREE.PlaneGeometry(2.22, 5.05);
+    // 4. Soft Under-Car Contact Shadow (AO) + Clustered Dual LED Headlight SpotLights & Rear Brake PointLight
+    const carShadowGeo = new THREE.PlaneGeometry(2.2, 5.15);
     carShadowGeo.rotateX(-Math.PI * 0.5);
     const carShadow = new THREE.Mesh(carShadowGeo, createContactShadowMaterial());
     carShadow.position.set(0, 0.02, 0.0);
@@ -490,7 +446,7 @@ class ThirdPersonControllerManager {
 
     return {
       type: 'car',
-      label: 'Toronto Taxi',
+      label: 'Buick Envision',
       mesh: root,
       chassisPivot,
       carState,
@@ -509,9 +465,9 @@ class ThirdPersonControllerManager {
       lastCollisionSpark: null,
       steerAngle: 0,
       wheelSpin: 0,
-      cameraTargetOffset: new THREE.Vector3(0, 0.96, 0),
-      chaseDistance: 6.9,
-      chaseHeight: 2.12
+      cameraTargetOffset: new THREE.Vector3(0, 1.05, 0),
+      chaseDistance: 7.1,
+      chaseHeight: 2.25
     };
   }
 
@@ -828,8 +784,8 @@ class ThirdPersonControllerManager {
 
     const sinH = carEntity ? Math.sin(carEntity.heading) : 0;
     const cosH = carEntity ? Math.cos(carEntity.heading) : 1;
-    const extX = carEntity ? (Math.abs(cosH) * 0.86 + Math.abs(sinH) * 2.18) : radius;
-    const extZ = carEntity ? (Math.abs(sinH) * 0.86 + Math.abs(cosH) * 2.18) : radius;
+    const extX = carEntity ? (Math.abs(cosH) * CAR_HALF_W + Math.abs(sinH) * CAR_HALF_L) : radius;
+    const extZ = carEntity ? (Math.abs(sinH) * CAR_HALF_W + Math.abs(cosH) * CAR_HALF_L) : radius;
 
     const reach = Math.max(extX, extZ) + 6;
     let gx = pos.x;
@@ -856,8 +812,8 @@ class ThirdPersonControllerManager {
           const lz = dx * o.sn + dz * o.cs;
           const ls = sinH * o.cs - cosH * o.sn; // heading in the box's frame
           const lc = sinH * o.sn + cosH * o.cs;
-          const ex = carEntity ? (Math.abs(lc) * 0.86 + Math.abs(ls) * 2.18) : radius;
-          const ez = carEntity ? (Math.abs(ls) * 0.86 + Math.abs(lc) * 2.18) : radius;
+          const ex = carEntity ? (Math.abs(lc) * CAR_HALF_W + Math.abs(ls) * CAR_HALF_L) : radius;
+          const ez = carEntity ? (Math.abs(ls) * CAR_HALF_W + Math.abs(lc) * CAR_HALF_L) : radius;
           if (lx + ex <= -o.hx || lx - ex >= o.hx || lz + ez <= -o.hz || lz - ez >= o.hz) continue;
           const oL = lx + ex + o.hx;
           const oR = o.hx - (lx - ex);
@@ -902,7 +858,7 @@ class ThirdPersonControllerManager {
           const sin = carEntity ? sinH : Math.sin(entity.heading);
           const cos = carEntity ? cosH : Math.cos(entity.heading);
           const approachSpeed = -((sin * entity.speed + (entity.vx || 0)) * nx + (cos * entity.speed + (entity.vz || 0)) * nz);
-          const support = carEntity ? Math.abs(nx * cos - nz * sin) * 0.86 + Math.abs(nx * sin + nz * cos) * 2.18 : radius;
+          const support = carEntity ? Math.abs(nx * cos - nz * sin) * CAR_HALF_W + Math.abs(nx * sin + nz * cos) * CAR_HALF_L : radius;
           this.reportCollision(entity, c, 'building', pos.x - nx * support, pos.y + (heli ? 1.1 : 0.56), pos.z - nz * support,
             nx, 0, nz, approachSpeed);
         }
