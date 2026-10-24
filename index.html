@@ -194,6 +194,12 @@
     </nav>
   </footer>
 
+  <!-- Center: the car's wreck notice while it waits to restart -->
+  <div id="hud-wrecked" class="wrecked" role="status" hidden>
+    <div class="wrecked-title">Wrecked</div>
+    <div class="wrecked-sub">Restarting in <span id="hud-wrecked-time">3</span>s</div>
+  </div>
+
   <!-- Bottom-Right: Speed Cluster & Camera Switcher -->
   <div class="hud hud-bottom-right">
     <section id="hud-cluster" class="panel cluster" aria-label="Vehicle telemetry and camera">
@@ -204,6 +210,10 @@
         </div>
         <div class="gauge-speed"><span id="hud-speed">0</span><span class="gauge-unit">km/h</span></div>
         <div class="gauge-meter" aria-hidden="true"><span id="hud-speed-meter"></span></div>
+        <div class="gauge-health">
+          <span class="gauge-health-label">Condition</span>
+          <div class="gauge-meter" role="meter" aria-label="Car condition" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100" id="hud-health"><span id="hud-health-meter"></span></div>
+        </div>
       </div>
       <div id="camera-switch" class="camera-switch">
         <button id="cam-prev" class="icon-btn" type="button" title="Previous camera" aria-label="Previous camera">

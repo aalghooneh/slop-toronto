@@ -46,6 +46,13 @@ const ENVISION = {
 };
 const RPM_PER_MS = 60 / (2 * Math.PI * ENVISION.wheelRadius); // wheel rpm per m/s
 
+// Crash damage: an impact at `speed` m/s (closing speed along the contact normal) takes this much of the car's 100
+// health. Bumps under ~9 km/h are free; a 50 km/h wall costs about a third, ~100 km/h wrecks it outright
+const CRASH = { threshold: 2.5, scale: 0.8, exponent: 1.5, wreckTime: 3.5 };
+function crashDamage(speed) {
+  return speed > CRASH.threshold ? CRASH.scale * (speed - CRASH.threshold) ** CRASH.exponent : 0;
+}
+
 // Full-load engine torque (N·m): building to the plateau off idle, then held to peak power
 function engineTorque(rpm) {
   const E = ENVISION;
@@ -170,6 +177,8 @@ class ThirdPersonControllerManager {
       cyclist: this.createCyclistEntity(),
       helicopter: this.createHelicopterEntity()
     };
+    // whatever the car runs into (buildings here; traffic, streetcars & pedestrians in their own systems) damages it
+    this.entities.car.takeHit = (speed) => this.damageCar(speed);
 
     Object.values(this.entities).forEach((ent) => {
       if (ent.mesh) {
@@ -539,6 +548,9 @@ class ThirdPersonControllerManager {
       lastCollisionSpark: null,
       steerAngle: 0,
       wheelSpin: 0,
+      health: 100, // 0 wrecks it (CRASH)
+      wrecked: 0, // seconds until a wrecked car restarts
+      home: { x: SPAWN_X - 3.6, z: SPAWN_Z + 12, heading: 0 },
       cameraTargetOffset: new THREE.Vector3(0, 1.05, 0),
       chaseDistance: 7.1,
       chaseHeight: 2.25
@@ -975,6 +987,7 @@ class ThirdPersonControllerManager {
           const totalVz = cosH * carEntity.speed + (carEntity.vz || 0);
           const vn = -(totalVx * nx + totalVz * nz);
           if (vn > 0.5) {
+            carEntity.takeHit?.(vn);
             const headOn = Math.abs(sinH * nx + cosH * nz);
             const sideDot = cosH * nx - sinH * nz;
             carEntity.vx = (carEntity.vx || 0) + nx * vn * 0.42;
@@ -1123,11 +1136,38 @@ class ThirdPersonControllerManager {
     }
   }
 
+  // An impact at `speed` m/s: takes its toll on the car's health, and wrecks it at 0
+  damageCar(speed) {
+    const c = this.entities.car;
+    if (c.wrecked > 0 || !Number.isFinite(speed)) return;
+    c.health = Math.max(0, c.health - crashDamage(speed));
+    if (c.health === 0) c.wrecked = CRASH.wreckTime;
+  }
+
+  // A wrecked car's restart: back where the drive began, as new
+  restartCar() {
+    const c = this.entities.car;
+    c.health = 100;
+    c.wrecked = 0;
+    if (this.activeMode === 'car') this.teleportActiveTo(c.home.x, c.home.z, c.home.heading);
+    else {
+      c.position.set(c.home.x, 0, c.home.z);
+      c.heading = c.home.heading;
+      c.speed = c.vx = c.vz = 0;
+    }
+  }
+
   updateCar(dt) {
     const c = this.entities.car;
+    // wrecked: the engine is dead and the controls do nothing until it restarts
+    if (c.wrecked > 0) {
+      c.wrecked -= dt;
+      if (c.wrecked <= 0) return this.restartCar();
+    }
+    const dead = c.wrecked > 0;
     let throttle = 0;
-    if (this.keys.forward) throttle = this.keys.forward;
-    else if (this.keys.backward) throttle = -this.keys.backward;
+    if (!dead && this.keys.forward) throttle = this.keys.forward;
+    else if (!dead && this.keys.backward) throttle = -this.keys.backward;
 
     const braking = c.speed * throttle < 0;
     const previousSpeed = c.speed;
@@ -1137,8 +1177,8 @@ class ThirdPersonControllerManager {
     const acceleration = dt > 0 ? (c.speed - previousSpeed) / dt : 0;
 
     let steerInput = 0;
-    if (this.keys.left) steerInput = this.keys.left;
-    if (this.keys.right) steerInput = -this.keys.right;
+    if (!dead && this.keys.left) steerInput = this.keys.left;
+    if (!dead && this.keys.right) steerInput = -this.keys.right;
 
     c.steerAngle += (steerInput * 0.52 - c.steerAngle) * Math.min(1, dt * 14);
 
@@ -1146,7 +1186,7 @@ class ThirdPersonControllerManager {
     // follows it only as far as the tyres can pull it round, so at speed the tail steps out and the car slides; the
     // handbrake (Space) locks the rear for power slides and handbrake turns. The car moves with its momentum (forward
     // speed along the nose + the slide across it in vx/vz), which is split again along the new heading every frame
-    const handbrake = !!this.keys.up && Math.hypot(c.speed, c.vx, c.vz) > 2;
+    const handbrake = !dead && !!this.keys.up && Math.hypot(c.speed, c.vx, c.vz) > 2;
     if (handbrake) c.speed = Math.sign(c.speed) * Math.max(0, Math.abs(c.speed) - ENVISION.handbrake * dt);
     const momentumX = Math.sin(c.heading) * c.speed + c.vx;
     const momentumZ = Math.cos(c.heading) * c.speed + c.vz;

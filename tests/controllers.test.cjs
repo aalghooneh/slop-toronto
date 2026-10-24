@@ -203,6 +203,41 @@ for (const mode of ['Person', 'Car', 'Cyclist', 'Helicopter']) {
   });
 }
 
+test('crashes wear the car down until it wrecks, then it restarts as new where the drive began', () => {
+  const { controller } = keyboardHarness();
+  const car = {
+    position: { x: 40, y: 0, z: 40, set(x, y, z) { Object.assign(this, { x, y, z }); } }, heading: 1, speed: 20,
+    vx: 0, vz: 0, angularVel: 0, steerAngle: 0, pitchVel: 0, rollVel: 0, heaveVel: 0, heaveY: 0, wheelSpin: 0,
+    chassisPivot: { rotation: { x: 0, z: 0 }, position: { y: 0 } }, wheels: [],
+    health: 100, wrecked: 0, home: { x: 1, z: 2, heading: 0.5 }
+  };
+  controller.entities = { car };
+  controller.activeMode = 'car';
+  controller.getGroundHeight = () => 0;
+  controller.resolveHorizontalCollision = () => {};
+  const teleports = [];
+  controller.teleportActiveTo = (x, z, heading) => teleports.push([x, z, heading]);
+
+  controller.damageCar(2);
+  assert.equal(car.health, 100, 'a parking bump is free');
+  controller.damageCar(50 / 3.6);
+  assert.ok(car.health > 55 && car.health < 75, `a 50 km/h crash costs about a third (left ${car.health})`);
+  controller.damageCar(100 / 3.6);
+  assert.equal(car.health, 0);
+  assert.ok(car.wrecked > 0, 'it is wrecked');
+
+  controller.setTouchInput('forward', 1);
+  const speed = car.speed;
+  controller.updateCar(0.5);
+  assert.ok(car.speed < speed, 'a wrecked car does not drive');
+  controller.damageCar(30);
+  assert.equal(car.health, 0, 'nothing more happens to a wreck');
+  for (let t = 0; t < 4; t += 0.5) controller.updateCar(0.5);
+  assert.equal(car.health, 100, 'restarted as new');
+  assert.equal(car.wrecked, 0);
+  assert.deepEqual(teleports, [[1, 2, 0.5]], 'back where the drive began');
+});
+
 function teleportHarness(mode, colliders = [], shore = () => ({ westX: -500, eastX: 500 })) {
   const harness = keyboardHarness({
     CITY_BOUNDS: { minX: -500, maxX: 500, minZ: -500, maxZ: 500, sidewalkHeight: 0.22 },

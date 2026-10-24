@@ -227,6 +227,12 @@ async function initApp() {
   const elCamera = document.getElementById('hud-active-camera');
   const elSpeed = document.getElementById('hud-speed');
   const elSpeedMeter = document.getElementById('hud-speed-meter');
+  const elHealth = document.getElementById('hud-health');
+  const elHealthMeter = document.getElementById('hud-health-meter');
+  const elWrecked = document.getElementById('hud-wrecked');
+  const elWreckedTime = document.getElementById('hud-wrecked-time');
+  let shownHealth = -1;
+  let shownWreck = -1;
   const elAltitude = document.getElementById('hud-altitude');
   const elLocation = document.getElementById('hud-location');
   const elControlsHint = document.getElementById('hud-controls-hint');
@@ -681,6 +687,23 @@ async function initApp() {
     lightingSystem.update(cameraSystem.currentPos);
     mapSystem.update();
     audioSystem.update(dt, elapsed, cameraSystem.camera, lightingSystem.activePresetId === 'midnight');
+
+    // The car's condition bar, and the wreck notice counting down to its restart (DOM touched only on change)
+    const car = controllerManager.entities.car;
+    const health = Math.ceil(car.health);
+    if (health !== shownHealth && elHealthMeter) {
+      shownHealth = health;
+      elHealthMeter.style.transform = `scaleX(${health / 100})`;
+      elHealthMeter.classList.toggle('is-warn', health <= 60 && health > 25);
+      elHealthMeter.classList.toggle('is-bad', health <= 25);
+      elHealth?.setAttribute('aria-valuenow', String(health));
+    }
+    const wreck = controllerManager.activeMode === 'car' && car.wrecked > 0 ? Math.ceil(car.wrecked) : 0;
+    if (wreck !== shownWreck && elWrecked) {
+      shownWreck = wreck;
+      elWrecked.hidden = !wreck;
+      if (elWreckedTime) elWreckedTime.textContent = String(wreck);
+    }
     if (warmedUp) updateSceneCulling(cameraSystem.camera.position); // the warm-up frame draws every chunk
 
     // Render frame via TSL RenderPipeline (SSR + Bloom)

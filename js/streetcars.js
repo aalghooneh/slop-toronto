@@ -520,7 +520,10 @@ function createStreetcars(scene, trafficSystem) {
             ground.position.x += sn * pz * s;
             ground.position.z += c * pz * s;
           }
-          if (ground.speed) ground.speed *= 0.3;
+          if (ground.speed) {
+            ground.takeHit?.(Math.abs(ground.speed));
+            ground.speed *= 0.3;
+          }
         }
       }
     });

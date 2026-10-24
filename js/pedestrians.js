@@ -1303,6 +1303,25 @@ class PersonRig {
     _qPelvis.multiply(qZ(_q, this.pelvisRoll)).multiply(qX(_q, this.pelvisTilt));
   }
 
+  // Tips the whole solved body over as one: rotated by `angle` about the horizontal axis (ax, 0, az) through
+  // (px, py, pz), then raised by `lift` (knocked down by a car: thrown, tumbling, lying in the road, getting up)
+  tumble(angle, ax, az, px, py, pz, lift) {
+    const s = this.s;
+    const a = this.pose;
+    _qa.setFromAxisAngle(_v.set(ax, 0, az).normalize(), angle);
+    for (let b = 0; b < BONE_COUNT; b++) {
+      const o = b * 8;
+      _q.set(a[o], a[o + 1], a[o + 2], a[o + 3]);
+      _v2.copy(this.bind[b]).applyQuaternion(_q).multiplyScalar(s);
+      _target.set(a[o + 4] + _v2.x - px, a[o + 5] + _v2.y - py, a[o + 6] + _v2.z - pz).applyQuaternion(_qa);
+      _target.x += px;
+      _target.y += py + lift;
+      _target.z += pz;
+      _q.premultiply(_qa);
+      this.writeBone(b, _q, _target);
+    }
+  }
+
   // Hip joint relative to the pelvis joint (out.y < 0: the hips are below it)
   hipOffset(i, out) {
     const j = this.bind;
