@@ -1,13 +1,5 @@
-import {
-  ALL_AVENUES,
-  ALL_STREETS,
-  AVENUES,
-  STREETS,
-  ISLAND_BOUNDS,
-  getIslandBoundsAtZ,
-  BLOCKS
-} from './city-config.js';
-import { GEO } from './nyc-geodata.js';
+import { landDistance, BLOCKS, FURNITURE } from './city-config.js';
+import { GEO } from './toronto-geodata.js';
 
 // js/road-network.js
 // Drivable road graph derived from the ground layout that city-grid.js actually builds: avenue corridors
@@ -19,8 +11,7 @@ import { GEO } from './nyc-geodata.js';
 // (rx, rz) = (-dz, dx). Lanes are lateral offsets to the right of the centreline, sorted left to right.
 
 const CELL = 32;
-const Z_MIN = Math.floor(ISLAND_BOUNDS.minZ) - 20; // the detailed island, ~129th St to the Battery
-const Z_MAX = Math.ceil(ISLAND_BOUNDS.maxZ) + 20;
+const Z_MIN = -1e6; // (no grid corridors: see 2.)
 const LANE_CLEAR = 1.2; // half width each lane keeps free of obstacles
 const CROSSWALK = 2.5; // depth between an intersection box and its stop lines
 const SHORE_MARGIN = 6;
@@ -57,10 +48,7 @@ function buildRoadNetwork(sidewalks, obstacles) {
   }
 
   function onLand(minX, maxX, minZ, maxZ) {
-    for (const z of [minZ, maxZ]) {
-      const shore = getIslandBoundsAtZ(z);
-      if (minX < shore.westX + SHORE_MARGIN || maxX > shore.eastX - SHORE_MARGIN) return false;
-    }
+    for (const x of [minX, maxX]) for (const z of [minZ, maxZ]) if (landDistance(x, z) < SHORE_MARGIN) return false;
     return true;
   }
 
@@ -106,134 +94,15 @@ function buildRoadNetwork(sidewalks, obstacles) {
     nearMedian(x, z, clear) ||
     query(x - clear, x + clear, z - clear, z + clear, (r) => !r.curb && (r.maxX - r.minX < 50 || r.maxZ - r.minZ < 50) && !medianBox(r));
 
-  // 2. Avenue corridors: the most common curb-to-curb gap around each avenue's nominal x along its own stretches
-  //    (CSCL: an avenue only exists between its ends, e.g. Irving Pl 14th-20th St, so it never claims a neighbour's
-  //    roadway), and the stretches of z (at least 30 m long) where at least one of its lanes is clear. Each stretch
-  //    keeps its real direction: two-way stretches (Central Park West, West End Ave, York Ave...) carry half of the
-  //    lanes each way
+  // 2. Lane offsets from a road's centreline by its half width (curb to curb): five lanes from 20 m, four from 17 m,
+  //    three from 13.6 m, two from 8.8 m
   const laneOffsets = (half) => (half >= 10.0 ? [-7.2, -3.6, 0, 3.6, 7.2]
     : half >= 8.5 ? [-5.4, -1.8, 1.8, 5.4]
       : half >= 6.8 ? [-3.6, 0, 3.6]
         : half >= 4.4 ? [-1.8, 1.8] : null);
+  // (Toronto's streets all come from the centreline graph below: there are no grid corridors scanned out of the curbs)
   const avenues = [];
-  for (const ave of ALL_AVENUES) {
-    if (ave.isHighway) continue;
-    const segs = ave.segs || [{ z0: ave.minZ, z1: ave.maxZ, dir: ave.dir }];
-    // the avenue's stretch at z (or the nearest one within an intersection's reach of its ends)
-    const segAt = (z) => {
-      let best = null;
-      let bestD = 15;
-      for (const s of segs) {
-        const d = z < s.z0 ? s.z0 - z : z > s.z1 ? z - s.z1 : 0;
-        if (d <= bestD) {
-          bestD = d;
-          best = s;
-        }
-      }
-      return best;
-    };
-    const votes = new Map();
-    for (let z = Z_MIN; z <= Z_MAX; z += 2) {
-      if (!segAt(z)) continue;
-      let left = -Infinity;
-      let right = Infinity;
-      let inside = false;
-      query(ave.x - 20, ave.x + 20, z, z, (r) => {
-        if (!r.curb) return false;
-        if (r.maxX <= ave.x) left = Math.max(left, r.maxX);
-        else if (r.minX >= ave.x) right = Math.min(right, r.minX);
-        else inside = true;
-        return false;
-      });
-      if (inside || left === -Infinity || right === Infinity) continue;
-      const k = `${left}:${right}`;
-      votes.set(k, (votes.get(k) || 0) + 1);
-    }
-    let best = null;
-    for (const [k, n] of votes) if (!best || n > votes.get(best)) best = k;
-    if (!best) continue;
-    const [left, right] = best.split(':').map(Number);
-    const half = (right - left) / 2;
-
-    // Physical lane offsets from the corridor centre for southbound (+z) and northbound (-z) traffic, by direction
-    // of the stretch (1: southbound, -1: northbound, 0: two-way)
-    let byDir;
-    if (ave.hasMedian) {
-      // Park Ave: three lanes each way either side of the planted malls (lanes in the malls drop out below)
-      const both = { south: [-11.4, -7.8, -4.2], north: [4.2, 7.8, 11.4] };
-      byDir = { 1: both, '-1': both, 0: both };
-    } else {
-      // Real curb-to-curb roadways (CSCL): 21.3 m (8th, 3rd, 1st, 11th Aves) carry five lanes, 18.3 m (7th, 9th,
-      // 10th, 2nd Aves) four, 14.6-15.8 m (5th, Madison, Lexington Aves) three
-      const lanes = laneOffsets(half);
-      if (!lanes) continue;
-      byDir = {
-        1: { south: lanes, north: [] },
-        '-1': { south: [], north: lanes },
-        0: { south: lanes.filter((o) => o < -0.5), north: lanes.filter((o) => o > 0.5) }
-      };
-    }
-    const lanesAt = (z) => {
-      const s = segAt(z);
-      return s ? byDir[Math.sign(s.dir || 0)] : null;
-    };
-
-    const x = (left + right) / 2;
-    const free = new Uint8Array(Z_MAX - Z_MIN + 1);
-    for (let i = 0; i < free.length; i++) {
-      const z = Z_MIN + i;
-      const set = lanesAt(z);
-      if (!set) continue;
-      free[i] = [...set.south, ...set.north].some((o) => !blocked(x + o - LANE_CLEAR, x + o + LANE_CLEAR, z - 0.5, z + 0.5)) ? 1 : 0;
-    }
-    for (let i = 0; i < free.length;) {
-      let j = i;
-      while (j < free.length && free[j] === free[i]) j++;
-      if (free[i] && j - i < 30) free.fill(0, i, j);
-      i = j;
-    }
-    avenues.push({ index: avenues.length, name: ave.short, x, half, lanesAt, free, nodes: [] });
-  }
-  avenues.sort((a, b) => a.x - b.x);
-  console.info('[roads] avenues', avenues.map((a) => `${a.name} x=${a.x.toFixed(1)} half=${a.half.toFixed(1)} free=${(a.free.reduce((s, v) => s + v, 0) / 1000).toFixed(1)}km`).join(' | '));
-
-  // 3. Cross streets: free z intervals of the line joining two neighbouring active avenue corridors
   const pieces = [];
-  const runs = new Map();
-  for (let i = 0; i <= Z_MAX - Z_MIN; i++) {
-    const z = Z_MIN + i;
-    const seen = new Set();
-    let prev = null;
-    for (const a of avenues) {
-      if (!a.free[i]) continue;
-      if (prev && !blocked(prev.x + prev.half, a.x - a.half, z - 0.5, z + 0.5)) {
-        const k = prev.index * 64 + a.index;
-        seen.add(k);
-        if (!runs.has(k)) runs.set(k, { a: prev, b: a, z0: z });
-      }
-      prev = a;
-    }
-    for (const [k, run] of runs) {
-      if (seen.has(k)) continue;
-      runs.delete(k);
-      const gap = z - run.z0;
-      if (gap >= 7) pieces.push({ a: run.a, b: run.b, z: (run.z0 + z - 1) / 2, gap }); // streets are ~9-10 m curb to curb
-    }
-  }
-
-  // One-way or two-way from the nearest named street inside the gap (majors and wide gaps are two-way)
-  for (const p of pieces) {
-    let st = null;
-    for (const s of ALL_STREETS) {
-      if (Math.abs(s.z - p.z) <= p.gap / 2 && (!st || Math.abs(s.z - p.z) < Math.abs(st.z - p.z))) st = s;
-    }
-    const twoWay = !st || st.dir === 0 || p.gap >= 20;
-    const pair = p.gap >= 17 ? [1.8, 5.4] : [1.8];
-    p.east = twoWay ? pair : st.dir > 0 ? [-1.8, 1.8] : [];
-    p.west = twoWay ? pair : st.dir < 0 ? [-1.8, 1.8] : [];
-  }
-
-  // 4. Intersections: street ends on avenue corridors (merged within 6 m)
   let nodes = [];
   function nodeAt(a, z) {
     for (const n of a.nodes) if (Math.abs(n.z - z) < 6) return n;
@@ -242,14 +111,8 @@ function buildRoadNetwork(sidewalks, obstacles) {
     nodes.push(n);
     return n;
   }
-  for (const p of pieces) {
-    p.half = (p.gap + 1) / 2; // the gap counts the free 1 m steps between the curbs
-    p.from = nodeAt(p.a, p.z);
-    p.to = nodeAt(p.b, p.z);
-    for (const n of [p.from, p.to]) n.hz = Math.max(n.hz, Math.abs(p.z - n.z) + Math.min(p.half, 13));
-  }
 
-  // 4b. Non-grid streets: Lower Manhattan, Broadway and the curved avenues farther north, from
+  // 4b. The streets, from
   //     the street centreline graph (GEO.roadGraph, tools/geo-roadgraph.mjs), minus the links the grid corridors above
   //     already carry. Its junctions join the grid where they meet it (at a grid intersection, on an avenue corridor or a
   //     cross street); a street's bends get shape nodes, so every edge stays straight.
@@ -388,7 +251,7 @@ function buildRoadNetwork(sidewalks, obstacles) {
     }
     // Lanes by the street's real curb-to-curb width and direction of travel: one-way streets as wide as the grid's
     // (two lanes from ~9 m), two-way ones a lane each way (two each way from 17 m). Wide or named avenues are major.
-    const MAJOR = /\bAVE\b|AVENUE|BROADWAY|BOWERY|BLVD|PARK ROW/;
+    const MAJOR = /\b(Avenue|Boulevard|Yonge Street|Bay Street|Queen Street|King Street|Front Street|Dundas Street|College Street|Bloor Street|Lake Shore)\b/;
     function lanesOf(l) {
       const w = l.w > 3 ? l.w : MAJOR.test(l.name) ? 18 : 9.1;
       const half = w / 2;
@@ -1070,11 +933,25 @@ function buildRoadNetwork(sidewalks, obstacles) {
   nodes = nodes.filter((n) => n.in && n.out);
   nodes.forEach((n, i) => (n.id = i));
 
-  // 8. Signalized intersections are exactly the ones with signal heads (street-details.js)
-  for (const a of AVENUES) {
-    for (const s of STREETS) {
-      const n = nodes.find((m) => Math.abs(m.x - a.x) < 4 && Math.abs(m.z - s.z) < 4);
-      if (n) n.signal = true;
+  // 8. Signalized intersections: the junctions with a real traffic signal (OpenStreetMap) within reach of their centre,
+  //    where at least three roads meet (street-details.js mounts the signal heads on exactly these)
+  {
+    const cells = new Map();
+    for (const p of FURNITURE.signals) {
+      const k = Math.floor(p.x / 32) * 100000 + Math.floor(p.z / 32);
+      if (!cells.has(k)) cells.set(k, []);
+      cells.get(k).push(p);
+    }
+    for (const n of nodes) {
+      if (n.shape || n.in.length + n.out.length < 3) continue;
+      const r = Math.max(14, Math.max(n.hx || 0, n.hz || 0) + 8);
+      let hit = false;
+      for (let ix = Math.floor((n.x - r) / 32); ix <= Math.floor((n.x + r) / 32) && !hit; ix++) {
+        for (let iz = Math.floor((n.z - r) / 32); iz <= Math.floor((n.z + r) / 32) && !hit; iz++) {
+          for (const p of cells.get(ix * 100000 + iz) || []) if (Math.hypot(p.x - n.x, p.z - n.z) < r) { hit = true; break; }
+        }
+      }
+      n.signal = hit;
     }
   }
 

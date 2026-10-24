@@ -1,12 +1,5 @@
 import * as THREE from 'three/webgpu';
-import {
-  ISLAND_BOUNDS,
-  CENTRAL_PARK_BOUNDS,
-  getIslandBoundsAtZ,
-  isTypingInField,
-  blockAt,
-  streetZ
-} from './city-config.js';
+import { CITY_BOUNDS, isTypingInField, blockAt, pushOntoLand, SPAWN } from './city-config.js';
 import { cityUniforms, createCarPaintMaterial, createContactShadowMaterial } from './tsl-materials.js';
 import {
   BODY_SPECS,
@@ -21,34 +14,33 @@ import {
 } from './actor-models.js';
 import { PersonCrowd, PersonRig } from './pedestrians.js';
 import { HEADLIGHTS, createVehicleHeadlight, placeVehicleHeadlight } from './vehicle-lights.js';
-import { bryantParkLawn } from './landmarks.js';
 
 // js/controllers.js
 // Sculpted, non-blocky GTA 6-style 3D models, animations, and physics controllers
 // for Third-Person Navigation:
 // 1. Person (Skinned Pedestrian: planted-footstep IK walk/run/jump, see pedestrians.js)
-// 2. Car (Aerodynamic Sculpted NYC Medallion Yellow Taxi with Sloped Windshield & Clearcoat)
+// 2. Car (Aerodynamic Sculpted Toronto Taxi with Sloped Windshield & Clearcoat)
 // 3. Cyclist (Sculpted Road Cyclist with Drop-Bar Frame & Aero Helmet)
-// 4. Helicopter (Manhattan Sightseeing Twin-Turbine Chopper)
+// 4. Helicopter (Harbourfront Sightseeing Twin-Turbine Chopper)
 
 // Spawn on 5th Ave at 37th St, facing south down the avenue toward the Empire State Building (34th St)
-const SPAWN_Z = streetZ(37);
+const SPAWN_X = SPAWN.x; // Yonge St between Queen St and King St (city-config.js SPAWN)
+const SPAWN_Z = SPAWN.z - 12;
 const groundCollider = { type: 'ground' };
 
 const CAR_DRIVE = {
   speed: 23.5, boostSpeed: 36, reverseSpeed: 10.5, acceleration: 14, boostAcceleration: 21,
-  rolling: 0.18, drag: 0.0012, coast: 0.6, brake: 9
+  rolling: 0.12, drag: 0.0004, brake: 9
 };
 const BICYCLE_DRIVE = {
   speed: 12.8, boostSpeed: 19, reverseSpeed: 4.5, acceleration: 9, boostAcceleration: 13.5,
-  rolling: 0.08, drag: 0.004, coast: 0.2, brake: 7.5 // Backward input is scaled to 0.6, giving 4.5 m/s² braking.
+  rolling: 0.05, drag: 0.002, brake: 7.5 // Backward input is scaled to 0.6, giving 4.5 m/s² braking.
 };
 
 function driveSpeed(speed, throttle, boost, dt, drive) {
   const braking = speed * throttle < 0;
   const magnitude = Math.abs(speed);
-  // Extra resistance on release gives a stronger slowdown while coasting.
-  const deceleration = drive.rolling + (!throttle ? drive.coast : braking ? Math.abs(throttle) * drive.brake : 0);
+  const deceleration = drive.rolling + (braking ? Math.abs(throttle) * drive.brake : 0);
   // Constant rolling resistance and quadratic air drag, without crossing zero or large-dt instability.
   const coasting = Math.max(0, magnitude - deceleration * dt) / (1 + drive.drag * magnitude * dt);
   if (!throttle || braking) return Math.sign(speed) * coasting;
@@ -62,120 +54,55 @@ function driveSpeed(speed, throttle, boost, dt, drive) {
 // Walking surface for the player's pedestrian (its rig samples it around its feet)
 const personGround = (controllers, x, z) => controllers.getGroundHeight(x, z, 'person');
 
-function collisionBody(mode, radius, heading, margin = 0) {
-  const car = mode === 'car';
-  const sin = Math.sin(heading), cos = Math.cos(heading);
-  const hx = 0.86 + margin, hz = 2.18 + margin;
-  return {
-    car, sin, cos, hx, hz, radius: radius + margin,
-    extX: car ? Math.abs(cos) * hx + Math.abs(sin) * hz : radius + margin,
-    extZ: car ? Math.abs(sin) * hx + Math.abs(cos) * hz : radius + margin,
-    bottom: mode === 'helicopter' ? -0.25 : 0,
-    top: mode === 'helicopter' ? 3.2 : car ? 1.8 : 1.9
-  };
-}
-
-// Shared by movement and teleport clearance. World bounds reject distant boxes cheaply; the narrow phase
-// uses a circle for walking/cycling/flying and all four separating axes for an oriented car rectangle.
-function buildingContact(c, x, y, z, body, contact) {
-  if (y + body.bottom >= c.maxY || y + body.top <= (c.minY ?? 0)) return false;
-  if (x + body.extX <= c.minX || x - body.extX >= c.maxX || z + body.extZ <= c.minZ || z - body.extZ >= c.maxZ) return false;
-  const o = c.obb;
-  const cs = o ? o.cs : 1, sn = o ? o.sn : 0;
-  const hx = o ? o.hx : (c.maxX - c.minX) * 0.5;
-  const hz = o ? o.hz : (c.maxZ - c.minZ) * 0.5;
-  const dx = x - (o ? o.cx : (c.minX + c.maxX) * 0.5);
-  const dz = z - (o ? o.cz : (c.minZ + c.maxZ) * 0.5);
-  const lx = dx * cs - dz * sn, lz = dx * sn + dz * cs;
-  let nx = 0, nz = 0, depth = Infinity;
-  if (body.car) {
-    const ls = body.sin * cs - body.cos * sn, lc = body.sin * sn + body.cos * cs;
-    for (let axis = 0; axis < 4; axis++) {
-      const ax = axis === 0 ? 1 : axis === 1 ? 0 : axis === 2 ? lc : ls;
-      const az = axis === 0 ? 0 : axis === 1 ? 1 : axis === 2 ? -ls : lc;
-      const distance = lx * ax + lz * az;
-      const overlap = hx * Math.abs(ax) + hz * Math.abs(az)
-        + body.hx * Math.abs(ax * lc - az * ls) + body.hz * Math.abs(ax * ls + az * lc) - Math.abs(distance);
-      if (overlap <= 0) return false;
-      if (overlap < depth) {
-        depth = overlap;
-        const sign = distance <= 0 ? -1 : 1;
-        nx = ax * sign; nz = az * sign;
-      }
-    }
-  } else {
-    const qx = lx - Math.max(-hx, Math.min(hx, lx));
-    const qz = lz - Math.max(-hz, Math.min(hz, lz));
-    const distance = Math.hypot(qx, qz);
-    if (distance >= body.radius) return false;
-    if (distance > 0) {
-      nx = qx / distance; nz = qz / distance;
-      depth = body.radius - distance;
-    } else if (hx - Math.abs(lx) <= hz - Math.abs(lz)) {
-      nx = lx <= 0 ? -1 : 1;
-      depth = hx - Math.abs(lx) + body.radius;
-    } else {
-      nz = lz <= 0 ? -1 : 1;
-      depth = hz - Math.abs(lz) + body.radius;
-    }
-  }
-  if (contact) {
-    contact.nx = nx * cs + nz * sn;
-    contact.nz = -nx * sn + nz * cs;
-    contact.depth = depth;
-  }
-  return true;
-}
-
 function createTaxiDoorDecalTexture() {
   const c = document.createElement('canvas');
   c.width = 256;
   c.height = 128;
   const ctx = c.getContext('2d');
-  ctx.fillStyle = '#ffbe14';
+  ctx.fillStyle = '#f5821f';
   ctx.fillRect(0, 0, 256, 128);
-  // Black T&LC circle emblem
+  // Black roundel with the cab's licence number
   ctx.fillStyle = '#111317';
   ctx.beginPath();
   ctx.arc(58, 64, 42, 0, Math.PI * 2);
   ctx.fill();
-  ctx.fillStyle = '#ffbe14';
-  ctx.font = '900 32px Inter, Arial, sans-serif';
+  ctx.fillStyle = '#f5821f';
+  ctx.font = '900 30px Inter, Arial, sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText('T', 58, 66);
-  // NYC TAXI typography & Fare Rate
+  ctx.fillText('416', 58, 66);
+  // TORONTO TAXI typography & fare
   ctx.fillStyle = '#111317';
   ctx.textAlign = 'left';
-  ctx.font = '900 26px Inter, Arial, sans-serif';
-  ctx.fillText('NYC TAXI', 112, 42);
+  ctx.font = '900 24px Inter, Arial, sans-serif';
+  ctx.fillText('TORONTO TAXI', 104, 42);
   ctx.font = '700 15px JetBrains Mono, monospace';
-  ctx.fillText('7Y48 · MEDALLION', 112, 68);
+  ctx.fillText('CAB 2417', 104, 68);
   ctx.font = '600 13px Inter, Arial, sans-serif';
-  ctx.fillText('$3.00 INITIAL FARE', 112, 90);
+  ctx.fillText('$4.25 INITIAL FARE', 104, 90);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
 }
 
-function createNYLicensePlateTexture() {
+function createOntarioLicensePlateTexture() {
   const c = document.createElement('canvas');
   c.width = 256;
   c.height = 128;
   const ctx = c.getContext('2d');
-  ctx.fillStyle = '#ffb81c';
+  ctx.fillStyle = '#f4f6f8';
   ctx.fillRect(0, 0, 256, 128);
-  ctx.fillStyle = '#0d2244';
-  ctx.fillRect(6, 6, 244, 24);
-  ctx.fillStyle = '#ffb81c';
-  ctx.font = '800 15px Inter, Arial, sans-serif';
+  ctx.strokeStyle = '#1b3f8b';
+  ctx.lineWidth = 4;
+  ctx.strokeRect(4, 4, 248, 120);
+  ctx.fillStyle = '#1b3f8b';
+  ctx.font = '800 16px Inter, Arial, sans-serif';
   ctx.textAlign = 'center';
-  ctx.fillText('NEW YORK', 128, 23);
-  ctx.fillStyle = '#0d2244';
-  ctx.font = '900 48px JetBrains Mono, monospace';
-  ctx.fillText('7Y48A', 128, 82);
-  ctx.font = '700 13px Inter, Arial, sans-serif';
-  ctx.fillText('NYC T&LC', 128, 114);
+  ctx.fillText('ONTARIO', 128, 26);
+  ctx.font = '900 46px JetBrains Mono, monospace';
+  ctx.fillText('TXAB 416', 128, 80);
+  ctx.font = 'italic 600 13px Inter, Arial, sans-serif';
+  ctx.fillText('YOURS TO DISCOVER', 128, 112);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
@@ -369,10 +296,12 @@ class ThirdPersonControllerManager {
   findTeleportPosition(x, z, heading, altitude) {
     if (!Number.isFinite(x) || !Number.isFinite(z)) return null;
     const heli = this.activeMode === 'helicopter';
+    const car = this.activeMode === 'car';
     const radius = heli ? 4.5 : this.activeMode === 'person' ? 0.48 : 0.65;
     const sinH = Math.sin(heading), cosH = Math.cos(heading);
-    const shape = collisionBody(this.activeMode, radius, heading, 0.1);
-    const reach = Math.max(shape.extX, shape.extZ);
+    const extX = (car ? Math.abs(cosH) * 0.86 + Math.abs(sinH) * 2.18 : radius) + 0.1;
+    const extZ = (car ? Math.abs(sinH) * 0.86 + Math.abs(cosH) * 2.18 : radius) + 0.1;
+    const reach = Math.max(extX, extZ);
     const margin = heli ? 6000 : 0;
     const entity = this.getActiveEntity();
     // Conservative body cylinders, including the taxi's corners, bicycle wheels and helicopter tail/rotor.
@@ -384,19 +313,15 @@ class ThirdPersonControllerManager {
     const cameraBack = Math.cos(0.09) * entity.chaseDistance;
     const cameraUp = entity.chaseHeight + Math.sin(0.09) * entity.chaseDistance * 0.85;
     const clampPoint = (px, pz) => {
-      pz = Math.max(ISLAND_BOUNDS.minZ + (heli ? -6000 : 30), Math.min(ISLAND_BOUNDS.maxZ + margin, pz));
-      px = Math.max(ISLAND_BOUNDS.minX - margin, Math.min(ISLAND_BOUNDS.maxX + margin, px));
-      if (!heli && getIslandBoundsAtZ) {
-        const shore = getIslandBoundsAtZ(pz);
-        const west = shore.westX + 8, east = shore.eastX - 8;
-        if (west > east) return null;
-        px = Math.max(west, Math.min(east, px));
-      }
-      return { x: px, z: pz };
+      pz = Math.max(CITY_BOUNDS.minZ - margin, Math.min(CITY_BOUNDS.maxZ + margin, pz));
+      px = Math.max(CITY_BOUNDS.minX - margin, Math.min(CITY_BOUNDS.maxX + margin, px));
+      // on foot, by car or bicycle: on downtown's ground, 8 m in from the dock walls & its inland edges
+      return heli ? { x: px, z: pz } : pushOntoLand(px, pz, 8);
     };
     const clear = (p) => {
       if (!p) return false;
       const baseY = heli ? altitude : this.getGroundHeight(p.x, p.z, this.activeMode);
+      const y = heli ? altitude : this.activeMode === 'person' ? baseY + 1 : 1;
       // Keep other player models out of both the arrival and its default chase view. A corridor also prevents a
       // parked car between camera and character from hiding the character even when the camera itself is outside it.
       const viewTop = baseY + Math.max(body[entity.type][1], cameraUp);
@@ -407,15 +332,24 @@ class ThirdPersonControllerManager {
         if (Math.hypot(dx + sinH * back, dz + cosH * back) < other.radius + Math.max(body[entity.type][0], 0.5) + 0.1) return false;
       }
       for (const c of this.nearColliders(p.x, p.z, reach)) {
-        if (buildingContact(c, p.x, baseY, p.z, shape)) return false;
+        if (y > c.maxY + 1.5) continue;
+        if (p.x + extX <= c.minX || p.x - extX >= c.maxX || p.z + extZ <= c.minZ || p.z - extZ >= c.maxZ) continue;
+        if (c.obb) {
+          const o = c.obb, dx = p.x - o.cx, dz = p.z - o.cz;
+          const ls = sinH * o.cs - cosH * o.sn, lc = sinH * o.sn + cosH * o.cs;
+          const ex = (car ? Math.abs(lc) * 0.86 + Math.abs(ls) * 2.18 : radius) + 0.1;
+          const ez = (car ? Math.abs(ls) * 0.86 + Math.abs(lc) * 2.18 : radius) + 0.1;
+          if (Math.abs(dx * o.cs - dz * o.sn) >= o.hx + ex || Math.abs(dx * o.sn + dz * o.cs) >= o.hz + ez) continue;
+        }
+        return false;
       }
       return true;
     };
     const origin = clampPoint(x, z);
     if (clear(origin)) return origin;
     // Four-metre rings cover nearby streets and courtyards, with bounded work even for a click inside a large block.
-    const cx = origin ? origin.x : Math.max(ISLAND_BOUNDS.minX, Math.min(ISLAND_BOUNDS.maxX, x));
-    const cz = origin ? origin.z : Math.max(ISLAND_BOUNDS.minZ + 30, Math.min(ISLAND_BOUNDS.maxZ, z));
+    const cx = origin ? origin.x : Math.max(CITY_BOUNDS.minX, Math.min(CITY_BOUNDS.maxX, x));
+    const cz = origin ? origin.z : Math.max(CITY_BOUNDS.minZ, Math.min(CITY_BOUNDS.maxZ, z));
     for (let distance = 4; distance <= 256; distance += 4) {
       for (let i = 0; i < 32; i++) {
         const angle = i * Math.PI / 16;
@@ -427,7 +361,7 @@ class ThirdPersonControllerManager {
   }
 
   // =========================================================================
-  // 1. PERSON (SKINNED NYC PEDESTRIAN WITH PLANTED-FOOTSTEP IK GAIT, see pedestrians.js)
+  // 1. PERSON (SKINNED PEDESTRIAN WITH PLANTED-FOOTSTEP IK GAIT, see pedestrians.js)
   // =========================================================================
   createPersonEntity() {
     const root = new THREE.Group();
@@ -454,7 +388,7 @@ class ThirdPersonControllerManager {
       mesh: root,
       crowd,
       rig,
-      position: new THREE.Vector3(-11.6, ISLAND_BOUNDS.sidewalkHeight, SPAWN_Z + 12),
+      position: new THREE.Vector3(SPAWN_X - 9.6, CITY_BOUNDS.sidewalkHeight, SPAWN_Z + 12),
       heading: 0,
       speed: 0,
       verticalVel: 0,
@@ -465,7 +399,7 @@ class ThirdPersonControllerManager {
   }
 
   // =========================================================================
-  // 2. CAR (3D LOFTED SCULPTED NYC MEDALLION YELLOW TAXI SEDAN)
+  // 2. CAR (3D LOFTED SCULPTED TORONTO TAXI SEDAN)
   // =========================================================================
   createCarEntity() {
     const root = new THREE.Group();
@@ -475,7 +409,7 @@ class ThirdPersonControllerManager {
     root.add(chassisPivot);
 
     const spec = BODY_SPECS.taxi;
-    const taxiLoftMat = createLoftedCarMaterial(spec, 0xffbe14);
+    const taxiLoftMat = createLoftedCarMaterial(spec, 0xf5821f);
 
     // 1. 3D Lofted Taxi Body + Curved Windscreens + Crowned Roof + Side Mirrors + Roof Sign
     const carBodyGeo = buildCarGeometry(spec, false);
@@ -484,7 +418,7 @@ class ThirdPersonControllerManager {
     carBodyMesh.receiveShadow = true;
     chassisPivot.add(carBodyMesh);
 
-    // 2. Authentic NYC Taxi Side Door T&LC Medallion & Fare Tariff Emblem Decals, hugging the curved front doors
+    // 2. Taxi side door decals (licence roundel & fare), hugging the curved front doors
     const doorDecalTex = createTaxiDoorDecalTexture();
     const doorDecalMat = new THREE.MeshStandardNodeMaterial({
       map: doorDecalTex,
@@ -500,8 +434,8 @@ class ThirdPersonControllerManager {
       chassisPivot.add(decal);
     }
 
-    // 3. High-Detail NY Empire Gold License Plates on the bumpers
-    const nyPlateTex = createNYLicensePlateTexture();
+    // 3. Ontario licence plates on the bumpers
+    const nyPlateTex = createOntarioLicensePlateTexture();
     const nyPlateMat = new THREE.MeshStandardNodeMaterial({ map: nyPlateTex, roughness: 0.28 });
     const rearPlate = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.14, 0.02), nyPlateMat);
     rearPlate.position.set(0, spec.plates[1], spec.zRear - 0.006);
@@ -556,13 +490,13 @@ class ThirdPersonControllerManager {
 
     return {
       type: 'car',
-      label: 'NYC Yellow Taxi',
+      label: 'Toronto Taxi',
       mesh: root,
       chassisPivot,
       carState,
       headLights,
       wheels,
-      position: new THREE.Vector3(3.6, 0.0, SPAWN_Z + 12),
+      position: new THREE.Vector3(SPAWN_X - 3.6, 0.0, SPAWN_Z + 12),
       heading: 0,
       speed: 0,
       vx: 0,
@@ -717,7 +651,7 @@ class ThirdPersonControllerManager {
 
     return {
       type: 'cyclist',
-      label: 'NYC Bike Lane Cyclist',
+      label: 'Bike Share Toronto Cyclist',
       mesh: root,
       leanPivot,
       frontWheel,
@@ -729,7 +663,7 @@ class ThirdPersonControllerManager {
       riderRig,
       helmet,
       headLight,
-      position: new THREE.Vector3(5.2, 0.0, SPAWN_Z - 8),
+      position: new THREE.Vector3(SPAWN_X - 5.4, 0.0, SPAWN_Z - 8),
       heading: 0,
       speed: 0,
       leanAngle: 0,
@@ -741,7 +675,7 @@ class ThirdPersonControllerManager {
   }
 
   // =========================================================================
-  // 4. HELICOPTER (3D LOFTED MANHATTAN SIGHTSEEING TWIN-TURBINE CHOPPER)
+  // 4. HELICOPTER (3D LOFTED SIGHTSEEING TWIN-TURBINE CHOPPER)
   // =========================================================================
   createHelicopterEntity() {
     const root = new THREE.Group();
@@ -813,7 +747,7 @@ class ThirdPersonControllerManager {
       tiltPivot,
       mainRotorPivot,
       tailRotorPivot,
-      position: new THREE.Vector3(-110, 96, SPAWN_Z - 60),
+      position: new THREE.Vector3(SPAWN_X - 110, 96, SPAWN_Z - 60),
       heading: 0.62,
       speed: 0,
       verticalSpeed: 0,
@@ -826,24 +760,14 @@ class ThirdPersonControllerManager {
   }
 
   // On a raised curb island (city-config.js BLOCKS: the real blocks, malls & plazas), not in a park
+  // Every curb island (sidewalks, park floors, medians) stands at the sidewalk's height
   isPointOnSidewalk(x, z) {
-    const b = blockAt(x, z);
-    return !!b && !(b.park > 0.6 && !b.median);
+    return !!blockAt(x, z);
   }
 
   getGroundHeight(x, z, mode = 'person') {
-    // Inside Central Park (5th Ave to Central Park West, 59th St to 110th St)
-    const cp = CENTRAL_PARK_BOUNDS;
-    if (x > cp.minX && x < cp.maxX && z > cp.minZ && z < cp.maxZ) {
-      return 1.24;
-    }
-    // Inside Bryant Park's Great Lawn (west of the New York Public Library, 40th-42nd St)
-    const lawn = bryantParkLawn;
-    if (lawn && x > lawn.minX && x < lawn.maxX && z > lawn.minZ && z < lawn.maxZ) {
-      return lawn.top;
-    }
     if (mode === 'person') {
-      return this.isPointOnSidewalk(x, z) ? ISLAND_BOUNDS.sidewalkHeight : 0.0;
+      return this.isPointOnSidewalk(x, z) ? CITY_BOUNDS.sidewalkHeight : 0.0;
     }
     return 0.0;
   }
@@ -887,28 +811,25 @@ class ThirdPersonControllerManager {
     return out;
   }
 
-  resolveHorizontalCollision(pos, radius, carEntity = null, entity = carEntity) {
-    // The detailed island (the helicopter may roam out over the harbour & the boroughs)
+  resolveHorizontalCollision(pos, radius, yHeight = 1.0, carEntity = null, entity = carEntity) {
+    // Downtown's ground (the helicopter may roam out over the lake & the rest of the city)
     const heli = this.activeMode === 'helicopter';
     const m = heli ? 6000 : 0;
-    pos.x = Math.max(ISLAND_BOUNDS.minX - m, Math.min(ISLAND_BOUNDS.maxX + m, pos.x));
-    pos.z = Math.max(ISLAND_BOUNDS.minZ + (heli ? -6000 : 30), Math.min(ISLAND_BOUNDS.maxZ + m, pos.z));
-    if (this.activeMode !== 'helicopter' && getIslandBoundsAtZ) {
-      const shore = getIslandBoundsAtZ(pos.z);
-      const minShoreX = shore.westX + 8.0;
-      const maxShoreX = shore.eastX - 8.0;
-      if (pos.x < minShoreX) {
-        pos.x = minShoreX;
-        if (carEntity && carEntity.speed) carEntity.speed *= 0.4;
-      } else if (pos.x > maxShoreX) {
-        pos.x = maxShoreX;
+    pos.x = Math.max(CITY_BOUNDS.minX - m, Math.min(CITY_BOUNDS.maxX + m, pos.x));
+    pos.z = Math.max(CITY_BOUNDS.minZ - m, Math.min(CITY_BOUNDS.maxZ + m, pos.z));
+    if (!heli) {
+      const p = pushOntoLand(pos.x, pos.z, 8.0);
+      if (p.x !== pos.x || p.z !== pos.z) {
+        pos.x = p.x;
+        pos.z = p.z;
         if (carEntity && carEntity.speed) carEntity.speed *= 0.4;
       }
     }
 
-    const body = collisionBody(this.activeMode, radius, carEntity ? carEntity.heading : 0);
-    const { sin: sinH, cos: cosH, extX, extZ } = body;
-    const contact = this._buildingContact ??= { nx: 0, nz: 0, depth: 0 };
+    const sinH = carEntity ? Math.sin(carEntity.heading) : 0;
+    const cosH = carEntity ? Math.cos(carEntity.heading) : 1;
+    const extX = carEntity ? (Math.abs(cosH) * 0.86 + Math.abs(sinH) * 2.18) : radius;
+    const extZ = carEntity ? (Math.abs(sinH) * 0.86 + Math.abs(cosH) * 2.18) : radius;
 
     const reach = Math.max(extX, extZ) + 6;
     let gx = pos.x;
@@ -916,10 +837,66 @@ class ThirdPersonControllerManager {
     let near = this.nearColliders(gx, gz, reach);
     for (let i = 0; i < near.length; i++) {
       const c = near[i];
-      if (buildingContact(c, pos.x, pos.y, pos.z, body, contact)) {
-        const { nx, nz, depth } = contact;
-        pos.x += nx * depth;
-        pos.z += nz * depth;
+      if (yHeight > c.maxY + 1.5) continue;
+
+      if (
+        pos.x + extX > c.minX &&
+        pos.x - extX < c.maxX &&
+        pos.z + extZ > c.minZ &&
+        pos.z - extZ < c.maxZ
+      ) {
+        let nx = 0;
+        let nz = 0;
+        if (c.obb) {
+          // Oriented box (buildings along a non-grid street; min/max are its world bounds): push out in its own frame
+          const o = c.obb;
+          const dx = pos.x - o.cx;
+          const dz = pos.z - o.cz;
+          const lx = dx * o.cs - dz * o.sn;
+          const lz = dx * o.sn + dz * o.cs;
+          const ls = sinH * o.cs - cosH * o.sn; // heading in the box's frame
+          const lc = sinH * o.sn + cosH * o.cs;
+          const ex = carEntity ? (Math.abs(lc) * 0.86 + Math.abs(ls) * 2.18) : radius;
+          const ez = carEntity ? (Math.abs(ls) * 0.86 + Math.abs(lc) * 2.18) : radius;
+          if (lx + ex <= -o.hx || lx - ex >= o.hx || lz + ez <= -o.hz || lz - ez >= o.hz) continue;
+          const oL = lx + ex + o.hx;
+          const oR = o.hx - (lx - ex);
+          const oT = lz + ez + o.hz;
+          const oB = o.hz - (lz - ez);
+          const m = Math.min(oL, oR, oT, oB);
+          let qx = lx;
+          let qz = lz;
+          let mx = 0;
+          let mz = 0;
+          if (m === oL) { qx = -o.hx - ex; mx = -1; }
+          else if (m === oR) { qx = o.hx + ex; mx = 1; }
+          else if (m === oT) { qz = -o.hz - ez; mz = -1; }
+          else { qz = o.hz + ez; mz = 1; }
+          pos.x = o.cx + qx * o.cs + qz * o.sn;
+          pos.z = o.cz - qx * o.sn + qz * o.cs;
+          nx = mx * o.cs + mz * o.sn;
+          nz = -mx * o.sn + mz * o.cs;
+        } else {
+          const overlapLeft = (pos.x + extX) - c.minX;
+          const overlapRight = c.maxX - (pos.x - extX);
+          const overlapTop = (pos.z + extZ) - c.minZ;
+          const overlapBottom = c.maxZ - (pos.z - extZ);
+
+          const minOverlap = Math.min(overlapLeft, overlapRight, overlapTop, overlapBottom);
+          if (minOverlap === overlapLeft) {
+            pos.x = c.minX - extX;
+            nx = -1;
+          } else if (minOverlap === overlapRight) {
+            pos.x = c.maxX + extX;
+            nx = 1;
+          } else if (minOverlap === overlapTop) {
+            pos.z = c.minZ - extZ;
+            nz = -1;
+          } else {
+            pos.z = c.maxZ + extZ;
+            nz = 1;
+          }
+        }
 
         if (this._collisionListener && entity && entity.type !== 'person') {
           const sin = carEntity ? sinH : Math.sin(entity.heading);
@@ -1062,7 +1039,7 @@ class ThirdPersonControllerManager {
 
     p.position.x += Math.sin(p.heading) * p.speed * dt;
     p.position.z += Math.cos(p.heading) * p.speed * dt;
-    this.resolveHorizontalCollision(p.position, 0.48);
+    this.resolveHorizontalCollision(p.position, 0.48, p.position.y + 1.0);
 
     const groundY = this.getGroundHeight(p.position.x, p.position.z, 'person');
     if (this.keys.up && p.position.y <= groundY + 0.02) {
@@ -1113,7 +1090,7 @@ class ThirdPersonControllerManager {
     c.vx *= tireGripDamp;
     c.vz *= tireGripDamp;
 
-    this.resolveHorizontalCollision(c.position, 1.35, c);
+    this.resolveHorizontalCollision(c.position, 1.35, 1.0, c);
     c.position.y = this.getGroundHeight(c.position.x, c.position.z, 'car');
 
     // 3-DOF Spring-Damper Chassis Suspension (Pitch, Roll & Vertical Heave)
@@ -1166,7 +1143,7 @@ class ThirdPersonControllerManager {
 
     b.position.x += Math.sin(b.heading) * b.speed * dt;
     b.position.z += Math.cos(b.heading) * b.speed * dt;
-    this.resolveHorizontalCollision(b.position, 0.65, null, b);
+    this.resolveHorizontalCollision(b.position, 0.65, 1.0, null, b);
     b.position.y = this.getGroundHeight(b.position.x, b.position.z, 'cyclist');
 
     const targetLean = -turnInput * Math.min(1.0, Math.abs(b.speed) / 9.0) * 0.34;
@@ -1225,7 +1202,7 @@ class ThirdPersonControllerManager {
       this.reportCollision(h, groundCollider, 'ground', h.position.x, 0.25, h.position.z, 0, 1, 0, -h.verticalSpeed);
     }
     h.position.y = Math.max(0.25, Math.min(380, h.position.y));
-    this.resolveHorizontalCollision(h.position, 4.5, null, h);
+    this.resolveHorizontalCollision(h.position, 4.5, h.position.y, null, h);
 
     const targetPitch = (h.speed / maxHorizSpeed) * 0.24;
     const targetRoll = -yawInput * 0.28;

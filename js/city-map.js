@@ -1,47 +1,36 @@
-import { GEO } from './nyc-geodata.js';
+import { GEO } from './toronto-geodata.js';
 import {
   ROADS,
   BLOCKS,
-  NYC_LANDMARKS,
+  LANDMARKS,
   LANDMARK_SITES,
-  ISLAND_BOUNDS,
-  getIslandBoundsAtZ,
-  MANHATTAN_COASTLINE,
-  WATERFRONT_PIERS,
-  NJ_SHORELINE_POLYGON,
-  BROOKLYN_POLYGONS,
-  QUEENS_POLYGONS,
-  BRONX_POLYGONS,
-  STATEN_ISLAND_POLYGON,
-  UPPER_MANHATTAN_POLYGON,
-  WESTCHESTER_POLYGON,
-  NASSAU_POLYGON,
-  ROOSEVELT_ISLAND_POLYGON,
-  GOVERNORS_ISLAND_POLYGON,
-  RANDALLS_ISLAND_POLYGON,
-  LIBERTY_ISLAND_POLYGON,
-  ELLIS_ISLAND_POLYGON,
-  MILL_ROCK_POLYGON,
-  EAST_RIVER_BRIDGES,
-  OUTER_BRIDGES,
+  TOWERS,
+  PIERS,
+  CITY_BOUNDS,
+  CITY_LAND,
+  MAINLAND_POLYGONS,
+  ISLAND_POLYGONS,
+  NEIGHBOURHOOD_NAMES,
+  LL,
+  POINTS,
+  pushOntoLand,
   getLocationLabel,
   isTypingInField
 } from './city-config.js';
 
-// js/nyc-map.js
-// GTA 6-Style Live Radar Minimap + Full-Screen Interactive New York City Cartographic Atlas.
-// Synchronized 1:1 with the 3D world (1 unit = 1 m; x = Manhattan-grid east, z = grid south, so both maps are drawn
-// "grid north up", the way Manhattan's street map is read, 29° east of true north). They draw the very geography the
-// city is built from (GEO, from NYC Open Data & OpenStreetMap): Manhattan's bulkhead line and piers, every
-// curb island (block) with the building footprints standing on it, the parks, Central Park's meadows, water bodies &
-// drives, the shore highways, the real street centrelines (labelled along their course), the surrounding boroughs and
-// New Jersey, the harbour islands and the bridges.
+// js/city-map.js
+// GTA 6-Style Live Radar Minimap + Full-Screen Interactive Toronto Cartographic Atlas.
+// Synchronized 1:1 with the 3D world (1 unit = 1 m; x = street-grid east, z = grid south, so both maps are drawn
+// "grid north up", the way Toronto's street map is read, ~17° west of true north). They draw the very geography the
+// city is built from (GEO, from OpenStreetMap): downtown's dock walls and piers, every curb island (block) with the
+// building footprints standing on it (the real towers among them), the parks, the expressways, the real street
+// centrelines (labelled along their course), the rest of the city along the lake and the Toronto Islands.
 
 const FONT = 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-const MIN_ZOOM = 0.015; // full map, pixels per metre: the whole harbour, Staten Island to the Bronx
+const MIN_ZOOM = 0.015; // full map, pixels per metre: the whole waterfront, Mississauga to Scarborough
 const MAX_ZOOM = 3.0; // single lots
 const RADAR_SCALE = 0.32; // radar pixels per metre on the ground (zooms out with altitude)
-const GRID_BEARING = (GEO.frame && GEO.frame.bearingDeg) || 29.02; // Manhattan's grid north, degrees east of true north
+const GRID_BEARING = (GEO.frame && GEO.frame.bearingDeg) || -16.7; // Toronto's grid north, degrees east of true north
 
 // Map palette, shared by the radar & the atlas (in step with css/style.css): graphite ground with the streets a shade
 // lighter than the blocks they run between, muted parks & water; a taxi-yellow GPS route, white landmarks & player,
@@ -53,7 +42,7 @@ const MAP = {
   islands: '#162019',
   islandsEdge: '#26392c',
   piers: '#283039',
-  streets: '#363f4b', // Manhattan inside its bulkhead line: the roadway left between the blocks
+  streets: '#363f4b', // downtown inside its dock walls: the roadway left between the blocks
   shore: '#4f5b6b',
   park: '#19301f',
   parkEdge: '#24432f',
@@ -76,35 +65,40 @@ const MAP = {
   halo: 'rgba(8, 11, 15, 0.9)'
 };
 
-// Landmarks modelled by landmarks.js on their real OpenStreetMap lots (outlined in amber)
-const MODELLED_LANDMARKS = [
-  'Empire State Building', 'Chrysler Building', 'One Vanderbilt', 'Grand Central Terminal', 'MetLife Building',
-  'Stephen A. Schwarzman Building', 'One Times Square', '30 Rockefeller Plaza', 'Citigroup Center', 'Seagram Building',
-  'Flatiron Building', 'One World Trade Center', 'New York Stock Exchange'
-];
+// Landmarks modelled by landmarks.js on their real OpenStreetMap lots (outlined)
+const MODELLED_LANDMARKS = ['CN Tower', 'Rogers Centre', 'Union Station', 'Toronto City Hall', 'Old City Hall', 'Gooderham Building',
+  'Ontario Legislative Building', 'Royal Ontario Museum', 'St. Lawrence Market South', 'Scotiabank Arena', 'Fairmont Royal York Hotel'];
 
-// Borough (0), waterway (1) & neighbourhood (2) names at their real places (world metres)
+// City (0), waterway (1) & neighbourhood (2) names at their real places (world metres); downtown's neighbourhoods at
+// the middle of their blocks (city-config.js districtAt)
 const AREA_LABELS = [
-  ['MANHATTAN', 120, -1500, 0], ['NEW JERSEY', -7000, 2000, 0], ['BROOKLYN', 7850, 8780, 0], ['QUEENS', 8810, -1680, 0],
-  ['THE BRONX', 1010, -9640, 0], ['STATEN ISLAND', -1800, 19220, 0],
-  ['HUDSON RIVER', -2680, -300, 1], ['HUDSON RIVER', -2650, -5600, 1], ['EAST RIVER', 1700, 800, 1],
-  ['HARLEM RIVER', 220, -7930, 1], ['UPPER NEW YORK BAY', 130, 10530, 1],
-  ['HARLEM', -320, -6750, 2], ['MORNINGSIDE HEIGHTS', -1600, -6160, 2], ['EAST HARLEM', 830, -5820, 2],
-  ['UPPER WEST SIDE', -1410, -3070, 2], ['CENTRAL PARK', -430, -3280, 2], ['UPPER EAST SIDE', 590, -2680, 2],
-  ['ROOSEVELT ISLAND', 1810, -2030, 2], ["HELL'S KITCHEN", -1350, -590, 2], ['MIDTOWN', 100, -500, 2],
-  ['MURRAY HILL', 680, 330, 2], ['HUDSON YARDS', -1510, 770, 2], ['CHELSEA', -1030, 1650, 2],
-  ['FLATIRON · GRAMERCY', 330, 1660, 2], ['GREENWICH VILLAGE', -540, 2830, 2], ['EAST VILLAGE', 1250, 2800, 2],
-  ['SOHO', 200, 3560, 2], ['LOWER EAST SIDE', 1690, 3760, 2], ['TRIBECA', -140, 4460, 2], ['CHINATOWN', 850, 4420, 2],
-  ['BATTERY PARK CITY', -370, 5540, 2], ['FINANCIAL DISTRICT', 455, 5715, 2], ['GOVERNORS ISLAND', 795, 7685, 2],
-  ['LIBERTY ISLAND', -1234, 8849, 2], ['ELLIS ISLAND', -1427, 7648, 2], ["RANDALL'S ISLAND", 2268, -6301, 2],
-  ['WASHINGTON HEIGHTS', -1690, -10270, 2], ['DOWNTOWN BROOKLYN', 2570, 6280, 2], ['WILLIAMSBURG', 3670, 2980, 2],
-  ['GREENPOINT', 3305, 1277, 2], ['LONG ISLAND CITY', 2865, -473, 2], ['ASTORIA', 3345, -3699, 2],
-  ['HOBOKEN', -3293, 3032, 2], ['JERSEY CITY', -2671, 6014, 2], ['WEEHAWKEN', -3670, 193, 2], ['FORT LEE', -4456, -9911, 2],
-  ['RED HOOK', 2005, 8855, 2], ['BAYONNE', -5284, 13699, 2]
+  ...[['DOWNTOWN TORONTO', -79.3832, 43.6560, 0], ['ETOBICOKE', -79.5300, 43.6500, 0], ['NORTH YORK', -79.4110, 43.7610, 0],
+    ['SCARBOROUGH', -79.2400, 43.7700, 0], ['EAST YORK', -79.3300, 43.7000, 0], ['YORK', -79.4700, 43.6900, 0], ['MISSISSAUGA', -79.6300, 43.5900, 0],
+    ['LAKE ONTARIO', -79.3700, 43.6000, 1], ['TORONTO HARBOUR', -79.3750, 43.6340, 1], ['HUMBER BAY', -79.4650, 43.6180, 1], ['DON RIVER', -79.3570, 43.6700, 1],
+    ['TORONTO ISLANDS', -79.3780, 43.6190, 2], ['LIBERTY VILLAGE', -79.4195, 43.6385, 2], ['LESLIEVILLE', -79.3300, 43.6630, 2],
+    ['RIVERDALE', -79.3500, 43.6720, 2], ['ROSEDALE', -79.3800, 43.6800, 2], ['THE DANFORTH', -79.3500, 43.6790, 2], ['PARKDALE', -79.4400, 43.6380, 2],
+    ['LITTLE ITALY', -79.4150, 43.6550, 2], ['FOREST HILL', -79.4150, 43.6950, 2], ['PORT LANDS', -79.3400, 43.6450, 2],
+    ['EXHIBITION PLACE', -79.4180, 43.6330, 2], ['HIGH PARK', -79.4640, 43.6460, 2], ['LESLIE STREET SPIT', -79.3300, 43.6200, 2],
+    ['THE BEACHES', -79.2950, 43.6700, 2], ['YONGE & EGLINTON', -79.3985, 43.7065, 2]]
+    .map(([label, lon, lat, kind]) => {
+      const p = LL(lon, lat);
+      return [label, p.x, p.z, kind];
+    }),
+  ...(() => {
+    const sums = new Map();
+    for (const b of BLOCKS) {
+      const s = sums.get(b.district) || { x: 0, z: 0, a: 0 };
+      s.x += b.cx * b.area;
+      s.z += b.cz * b.area;
+      s.a += b.area;
+      sums.set(b.district, s);
+    }
+    return [...sums].filter(([k]) => NEIGHBOURHOOD_NAMES[k]).map(([k, s]) => [NEIGHBOURHOOD_NAMES[k].toUpperCase(), s.x / s.a, s.z / s.a, 2]);
+  })()
 ];
 
 // Shorter map names for a few real street names
-const LABEL_ALIAS = { 'Franklin D Roosevelt Dr': 'FDR Drive', 'Battery Park Underpass': 'Battery Underpass' };
+const LABEL_ALIAS = { 'Gardiner Expy': 'Gardiner Expressway', 'Don Valley Pkwy': 'DVP' };
 
 // ---------------------------------------------------------------------------------------------------------------------
 // World-space vector layers: built once into Path2D objects (world metres) and drawn through a canvas transform
@@ -213,50 +207,42 @@ function mapLayers() {
   const L = {};
   const rings = (list) => list.filter((p) => p && p.length > 2);
 
-  // Land around the harbour: New Jersey, Brooklyn, Queens, the Bronx, Staten Island and Upper Manhattan (outlined), the
-  // horizon fillers beyond the city line (not outlined); the East River & harbour islands
+  // The rest of the city along the lake (outlined), the Toronto Islands & Ontario Place's
   L.land = new Path2D();
-  for (const ring of rings([NJ_SHORELINE_POLYGON, ...(BROOKLYN_POLYGONS || []), ...(QUEENS_POLYGONS || []), ...(BRONX_POLYGONS || []),
-    STATEN_ISLAND_POLYGON, UPPER_MANHATTAN_POLYGON])) addRing(L.land, ring);
+  for (const ring of rings(Object.values(MAINLAND_POLYGONS))) addRing(L.land, ring);
   L.fillers = new Path2D();
-  for (const ring of rings([WESTCHESTER_POLYGON, NASSAU_POLYGON])) addRing(L.fillers, ring);
   L.islands = new Path2D();
-  for (const ring of rings([RANDALLS_ISLAND_POLYGON, ROOSEVELT_ISLAND_POLYGON, GOVERNORS_ISLAND_POLYGON, LIBERTY_ISLAND_POLYGON,
-    ELLIS_ISLAND_POLYGON, MILL_ROCK_POLYGON])) addRing(L.islands, ring);
+  for (const ring of rings(ISLAND_POLYGONS)) addRing(L.islands, ring);
 
-  // Manhattan inside its bulkhead line, and its piers
+  // Downtown inside its dock walls, and the piers
   L.manhattan = new Path2D();
-  addRing(L.manhattan, MANHATTAN_COASTLINE);
+  addRing(L.manhattan, CITY_LAND);
   L.piers = new Path2D();
-  for (const p of WATERFRONT_PIERS) if (p.ring) addRing(L.piers, p.ring);
+  for (const p of PIERS) if (p.ring) addRing(L.piers, p.ring);
 
-  // Parkland (NYC Parks properties), the curb islands (blocks: raised sidewalks & lots) and the park blocks, exactly
-  // as city-grid.js / buildings.js treat them
+  // Parkland, the curb islands (blocks: raised sidewalks & lots) and the park blocks, exactly as city-grid.js /
+  // buildings.js treat them
   L.parkLand = new TiledLayer();
   for (const park of GEO.parks || []) for (const ring of park.rings || []) L.parkLand.ring(ring);
   L.blocks = new TiledLayer();
   L.parkBlocks = new TiledLayer();
   for (const b of BLOCKS) (b.park > 0.6 && !b.median ? L.parkBlocks : L.blocks).ring(b.poly);
 
-  // Central Park: meadows, water bodies, the drives and the sunken transverse roads
-  const cp = GEO.centralPark || {};
-  L.cpBounds = cp.bounds || null;
+  // (no Central Park downtown: the park layers stay empty)
+  L.cpBounds = null;
   L.cpLawns = new Path2D();
-  for (const l of cp.lawns || []) addRing(L.cpLawns, l.ring);
   L.cpWater = new Path2D();
-  for (const w of cp.water || []) addRing(L.cpWater, w.ring);
   L.cpDrives = new Path2D();
   L.cpTransverses = new Path2D();
-  for (const d of cp.drives || []) addLine(d.transverse ? L.cpTransverses : L.cpDrives, d.pts);
 
-  // Street network at low zoom (avenues & wide streets, once the gaps between blocks are under a pixel) and the shore
-  // highways (FDR Drive, West St / West Side Hwy, Harlem River Dr, Henry Hudson Pkwy)
+  // Street network at low zoom (the wide streets, once the gaps between blocks are under a pixel) and the expressways
+  // (the Gardiner, the Don Valley Parkway)
   L.mainRoads = new TiledLayer(1000);
   L.highways = new Path2D();
   for (const r of ROADS) {
     if (r.highway) {
       if (!/Underpass|Tunnel/.test(r.name)) addLine(L.highways, r.pts);
-    } else if (r.w >= 15) L.mainRoads.line(r.pts);
+    } else if (r.w >= 12.5) L.mainRoads.line(r.pts);
   }
 
   // Landmark lots
@@ -266,13 +252,7 @@ function mapLayers() {
     if (s && s.ring) addRing(L.landmarks, s.ring);
   }
 
-  // Bridges, Manhattan landing to the far landing, deck width to scale
-  L.bridges = [...EAST_RIVER_BRIDGES, ...OUTER_BRIDGES].map((br) => {
-    const path = new Path2D();
-    path.moveTo(br.a.x, br.a.z);
-    path.lineTo(br.b.x, br.b.z);
-    return { path, width: br.width || 25 };
-  });
+  L.bridges = [];
 
   LAYERS = L;
   return L;
@@ -284,6 +264,7 @@ function footprintLayers(all) {
   if (!all || !all.length) return null;
   if (FOOTPRINTS && FOOTPRINTS.src === all && FOOTPRINTS.n === all.length) return FOOTPRINTS;
   const tones = [new TiledLayer(), new TiledLayer(), new TiledLayer()];
+  for (const t of TOWERS) tones[t.h > 95 ? 2 : t.h > 45 ? 1 : 0].ring(t.ring);
   for (const blk of all) {
     for (const f of blk.footprints || []) {
       const layer = tones[f.h > 95 ? 2 : f.h > 45 ? 1 : 0];
@@ -433,7 +414,7 @@ function drawWaypoint(ctx, x, y, r) {
 
 const overlaps = (boxes, b) => boxes.some((o) => b[0] < o[2] && b[2] > o[0] && b[1] < o[3] && b[3] > o[1]);
 
-class NYCMapSystem {
+class CityMapSystem {
   constructor({ controllerManager, cameraSystem, trafficSystem, allBlocks = [], onTeleport, onToggle }) {
     this.controllerManager = controllerManager;
     this.cameraSystem = cameraSystem;
@@ -481,9 +462,9 @@ class NYCMapSystem {
     this.searchHighlight = '';
     this.searchPath = null;
     this.textWidths = new Map();
-    // Default GTA 6-style active GPS waypoint (Times Square / Broadway)
-    const ts = NYC_LANDMARKS.find((l) => l.id === 'timessquare') || { x: 0, z: 0 };
-    this.waypoint = { x: ts.x, z: ts.z, name: 'Times Square & 42nd St' };
+    // Default GTA 6-style active GPS waypoint (the CN Tower)
+    const cn = LANDMARKS.find((l) => l.id === 'cntower') || { x: POINTS.cnTower.x, z: POINTS.cnTower.z };
+    this.waypoint = { x: cn.x, z: cn.z, name: 'CN Tower' };
 
     // Street names measured before the web font arrived would be spaced for the fallback font: measure & draw again
     if (document.fonts) {
@@ -535,8 +516,8 @@ class NYCMapSystem {
     }
     if (fullIslandBtn) {
       fullIslandBtn.addEventListener('click', () => {
-        // Fits all of Manhattan, from the Harlem River to the Battery
-        const b = ISLAND_BOUNDS;
+        // Fits all of downtown, from the lake to Bloor St
+        const b = CITY_BOUNDS;
         const { w, h } = this.fullSize();
         this.viewCenterX = (b.minX + b.maxX) * 0.5;
         this.viewCenterZ = (b.minZ + b.maxZ) * 0.5;
@@ -609,7 +590,7 @@ class NYCMapSystem {
           const mx = e.clientX - rect.left;
           const my = e.clientY - rect.top;
           if (mx >= 0 && mx <= rect.width && my >= 0 && my <= rect.height) {
-            const wPos = this.clampToManhattan(this.screenToWorld(mx, my, rect.width, rect.height));
+            const wPos = this.clampToLand(this.screenToWorld(mx, my, rect.width, rect.height));
             this.waypoint = {
               x: wPos.x,
               z: wPos.z,
@@ -657,7 +638,7 @@ class NYCMapSystem {
     this.searchHighlight = q;
     this.searchPath = null;
     if (q.length > 0) {
-      const lmMatch = NYC_LANDMARKS.find((l) => l.name.toLowerCase().includes(q) || l.short.toLowerCase().includes(q));
+      const lmMatch = LANDMARKS.find((l) => l.name.toLowerCase().includes(q) || l.short.toLowerCase().includes(q));
       const roads = ROAD_LABELS.filter((l) => l.lower.includes(q) || l.raw.includes(q));
       if (roads.length) {
         this.searchPath = new Path2D();
@@ -739,11 +720,9 @@ class NYCMapSystem {
     };
   }
 
-  // Teleports land on Manhattan: inside the island's extent at that latitude
-  clampToManhattan(p) {
-    const z = Math.max(ISLAND_BOUNDS.minZ + 25, Math.min(ISLAND_BOUNDS.maxZ - 25, p.z));
-    const shore = getIslandBoundsAtZ(z);
-    return { x: Math.max(shore.westX + 12, Math.min(shore.eastX - 12, p.x)), z };
+  // Teleports land on downtown's ground, a little in from its dock walls & edges
+  clampToLand(p) {
+    return pushOntoLand(p.x, p.z, 12);
   }
 
   textWidth(ctx, text) {
@@ -757,7 +736,7 @@ class NYCMapSystem {
   }
 
   /**
-   * The ground: land & water, Manhattan with its piers, parkland, blocks, Central Park, building footprints, landmark
+   * The ground: land & water, downtown with its piers, parkland, blocks, Central Park, building footprints, landmark
    * lots, the main streets at low zoom, shore highways, bridges and the search highlight (world transform of view v)
    */
   drawWorld(ctx, v, isMinimap) {
@@ -782,7 +761,7 @@ class NYCMapSystem {
       ctx.stroke(L.islands);
     }
 
-    // 2. Piers, then Manhattan (roadway deck colour: the streets are the gaps between the blocks) in its bulkhead line
+    // 2. Piers, then downtown (roadway deck colour: the streets are the gaps between the blocks) inside its dock walls
     ctx.fillStyle = MAP.piers;
     ctx.fill(L.piers);
     ctx.fillStyle = MAP.streets;
@@ -1053,7 +1032,7 @@ class NYCMapSystem {
     }
 
     // Landmark blips
-    for (const lm of NYC_LANDMARKS) {
+    for (const lm of LANDMARKS) {
       const lx = toX(lm.x);
       const ly = toY(lm.z);
       if (Math.abs(lx) < w * 0.48 && Math.abs(ly) < h * 0.48) {
@@ -1095,7 +1074,7 @@ class NYCMapSystem {
   }
 
   // =========================================================================
-  // 2. FULL NEW YORK CITY INTERACTIVE STREET MAP MODAL ([M])
+  // 2. FULL TORONTO INTERACTIVE STREET MAP MODAL ([M])
   // =========================================================================
   renderFullMap() {
     if (!this.fullCtx || !this.fullCanvas || !this.isFullMapOpen) return;
@@ -1172,7 +1151,7 @@ class NYCMapSystem {
     ctx.fillStyle = MAP.water;
     ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
 
-    // 2. The ground: boroughs, islands, Manhattan's blocks, parks, footprints, highways & bridges
+    // 2. The ground: the city around, the islands, downtown's blocks, parks, footprints & expressways
     this.drawWorld(ctx, v, false);
 
     v.screen(ctx);
@@ -1183,7 +1162,7 @@ class NYCMapSystem {
     ctx.font = `700 11px ${FONT}`;
     const placed = [];
     const pins = [];
-    for (const lm of NYC_LANDMARKS) {
+    for (const lm of LANDMARKS) {
       const lx = toX(lm.x);
       const ly = toY(lm.z);
       if (Math.abs(lx) > w * 0.48 || Math.abs(ly) > h * 0.48) continue;
@@ -1195,7 +1174,7 @@ class NYCMapSystem {
       pins.push({ lm, lx, ly, showLabel });
     }
 
-    // 4. Borough, waterway & neighbourhood watermark titles (wherever they fit), letter-spaced like a printed atlas
+    // 4. City, waterway & neighbourhood watermark titles (wherever they fit), letter-spaced like a printed atlas
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     const tracking = 'letterSpacing' in ctx;
@@ -1287,4 +1266,4 @@ class NYCMapSystem {
   }
 }
 
-export { NYCMapSystem };
+export { CityMapSystem };

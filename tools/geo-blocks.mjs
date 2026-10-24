@@ -1,71 +1,37 @@
-// Part 3: real Manhattan blocks ("curb islands") from the street centerline, by rasterising every at-grade roadway at
-// its curb-to-curb width over the land (minus a waterfront strip), then labelling what's left.
+// Part 3: real Toronto blocks ("curb islands") from the street centrelines, by rasterising every at-grade roadway at
+// its curb-to-curb width over downtown's land (minus a waterfront strip along the lake), then labelling what's left.
 // Each block: curb outline polygon, axis-aligned lot rects inside its property line (curb minus sidewalk), metadata.
-import { geo, Raster, rdpRing, ringArea, bbox, log } from './geo-base.mjs';
+import { geo, Raster, rdpRing, ringArea, bbox, clipRect, log } from './geo-base.mjs';
 import { pieces } from './geo-streets.mjs';
 
-export const CUT_Z = -7090; // detailed island south of here (≈ 129th St); Upper Manhattan beyond is low-detail
-export const STRIP = 20; // waterfront strip kept clear of blocks (esplanade + shore highway), metres in from the bulkhead
-export const SIDEWALK = 4.6; // property line in from the curb (15 ft)
+export const STRIP = 12; // waterfront strip kept clear of blocks (the harbourfront promenade), metres in from the dock wall
+export const SIDEWALK = 4.2; // property line in from the curb
 const RES = 1;
+const { DETAIL } = geo;
 
 // --- Roadways that bound blocks ----------------------------------------------------------------------------------------
-const PARK_ROADS = /^(EAST DR|WEST DR|CENTER DR|\d+ ST TRANSVERSE|CENTRAL PARK GREAT HL|CENTRAL RD)$/;
-const HIGHWAYS = /^(FRANKLIN D ROOSEVELT DR|FDR DR {2}VIADUCT|HARLEM RIVER DR|HARLEM RIVER DY|HENRY HUDSON PKWY|BATTERY PARK UNDERPASS)$/;
-function roadWidth(p) {
-  if (p.w > 3) return p.w;
-  if (/AVE|BLVD|BROADWAY|DR$/.test(p.name)) return 18;
-  return 9.1;
-}
-const roads = [];
-for (const p of pieces) {
-  if (p.level !== '13') continue; // at grade (from-level; ramps & viaducts drop out below)
-  const atGradeStreet = p.rw === '1' && !PARK_ROADS.test(p.name) && !HIGHWAYS.test(p.name) && !/DRIVEWAY|PEDESTRIAN|ALLEY/.test(p.name);
-  const surface9A = p.rw === '2' && /^(WEST ST|12 AVE|11 AVE)$/.test(p.name); // Route 9A at grade bounds the west side blocks
-  const plaza = p.rw === '6' && p.name === 'BROADWAY'; // Broadway's pedestrian plazas (Times Sq, Herald Sq...)
-  if (!atGradeStreet && !surface9A && !plaza) continue;
-  roads.push({ x0: p.x0, z0: p.z0, x1: p.x1, z1: p.z1, r: roadWidth(p) / 2, name: p.name });
-}
-// Broadway's pedestrian plazas aren't in the centerline (Times Square 42nd-47th St, Herald & Greeley Squares
-// 33rd-35th St): bridge each gap with a straight piece between the Broadway ends on either side
+const roads = pieces.map((p) => ({ x0: p.x0, z0: p.z0, x1: p.x1, z1: p.z1, r: p.w / 2, name: p.name }));
 export const PLAZAS = [];
-{
-  const bw = roads.filter((s) => s.name === 'BROADWAY');
-  const ends = [];
-  for (const s of bw) ends.push([s.x0, s.z0], [s.x1, s.z1]);
-  const nearestEnd = (z, below) => {
-    let best = null;
-    for (const e of ends) {
-      if (below ? e[1] < z - 3 || e[1] > z + 40 : e[1] > z + 3 || e[1] < z - 40) continue;
-      if (!best || Math.abs(e[1] - z) < Math.abs(best[1] - z)) best = e;
-    }
-    return best;
-  };
-  for (const [name, zN, zS] of [['Times Square', -402, 0], ['Herald Square', 556, 726]]) {
-    const a = nearestEnd(zN, false), b = nearestEnd(zS, true);
-    if (!a || !b) continue;
-    roads.push({ x0: a[0], z0: a[1], x1: b[0], z1: b[1], r: 9, name: 'BROADWAY', plaza: name });
-    PLAZAS.push({ name, a, b, w: 18 });
-  }
-}
 log(`${roads.length} at-grade roadway pieces`);
 
-// --- Land: the bulkhead ring eroded by the waterfront strip ------------------------------------------------------------
-const mb = bbox(geo.manhattan);
-const land2 = new Raster(mb.x0 - 10, Math.max(mb.z0, CUT_Z - 400) - 10, mb.x1 + 10, mb.z1 + 10, 2);
-land2.fillRing(geo.manhattan, 1);
+// --- Land: downtown's ring, minus the waterfront strip along the real water (not along the window's inland edges) ----
+const land2 = new Raster(DETAIL.x0 - 10, DETAIL.z0 - 10, DETAIL.x1 + 10, DETAIL.z1 + 10, 2);
+const water2 = new Raster(DETAIL.x0 - 10, DETAIL.z0 - 10, DETAIL.x1 + 10, DETAIL.z1 + 10, 2);
+land2.fillRing(geo.downtown, 1);
+water2.fillRing(clipRect(geo.mainland, DETAIL.x0 - 200, DETAIL.x1 + 200, DETAIL.z0 - 200, DETAIL.z1 + 200), 1); // 1 = land
 {
-  const toWater = land2.edt((v) => v === 0);
+  const toWater = water2.edt((v) => v === 0);
   const rc = (STRIP / 2) ** 2;
-  for (let i = 0; i < land2.d.length; i++) land2.d[i] = toWater[i] > rc ? 1 : 0;
+  for (let i = 0; i < land2.d.length; i++) if (toWater[i] <= rc) land2.d[i] = 0;
 }
 land2.keepLargest();
 const innerRing = rdpRing(land2.traceOuter(), 1.0);
 log(`inner land ring (strip ${STRIP} m): ${innerRing.length} pts`);
 
 // --- 1 m buildable raster -------------------------------------------------------------------------------------------
+const mb = bbox(innerRing);
 const X0 = Math.floor(mb.x0) - 4, X1 = Math.ceil(mb.x1) + 4;
-const Z0 = CUT_Z, Z1 = Math.ceil(mb.z1) + 4;
+const Z0 = Math.floor(mb.z0) - 4, Z1 = Math.ceil(mb.z1) + 4;
 const R = new Raster(X0, Z0, X1, Z1, RES);
 R.fillRing(innerRing, 1);
 const W = R.w, H = R.h, D = R.d;
@@ -263,7 +229,7 @@ function lotRects(c, maxRects = 8) {
   };
 }
 
-// --- Frontage frames of irregular islands (Lower Manhattan, Broadway's diagonals...) ---------------------------------
+// --- Frontage frames of irregular islands (the diagonal & curving streets: Davenport, Queen's Park, the Esplanade...) --
 // The street directions an island fronts: its outline's edge directions modulo 90°, length-weighted, in up to 3
 // clusters ±7° wide. Every island cell joins the cluster of its nearest outline edge; each cluster's cells are then
 // re-rasterised in a frame turned to its direction, eroded by the sidewalk width there (so a diagonal property line

@@ -56,14 +56,7 @@ import {
   specularColorBlended,
   specularF90
 } from 'three/tsl';
-import {
-  CENTRAL_PARK_BOUNDS,
-  ISLAND_BOUNDS,
-  getIslandBoundsAtZ,
-  NJ_SHORELINE_POLYGON,
-  LONG_ISLAND_POLYGONS,
-  streetZ
-} from './city-config.js';
+import { CITY_BOUNDS, CITY_LAND, MAINLAND_POLYGONS, ISLAND_POLYGONS } from './city-config.js';
 
 // js/tsl-materials.js
 // Photorealistic TSL (Three.js Shading Language) procedural shaders for Three.js r186 WebGPURenderer
@@ -162,21 +155,14 @@ const filteredPulse = Fn(([x, a, b, w]) => {
 
 /**
  * Occlusion-Aware Urban Canyon Sky Visibility (aoNode)
- * Models how Manhattan street canyons occlude overhead sky irradiance near the street floor (y = 0..65m),
- * while opening up in Central Park and on upper tower shafts.
+ * Models how downtown's street canyons occlude overhead sky irradiance near the street floor (y = 0..65m),
+ * while opening up on the upper tower shafts.
  */
 const canyonSkyAONode = Fn(() => {
   const wp = positionWorld;
-  // Open sky inside Central Park (city-config.js CENTRAL_PARK_BOUNDS, 5th Ave to Central Park West, 59th to 110th St)
-  const cp = CENTRAL_PARK_BOUNDS;
-  const inParkX = smoothstep(cp.minX - 10.0, cp.minX + 20.0, wp.x).mul(float(1.0).sub(smoothstep(cp.maxX - 20.0, cp.maxX + 10.0, wp.x)));
-  const inParkZ = smoothstep(cp.minZ - 10.0, cp.minZ + 30.0, wp.z).mul(float(1.0).sub(smoothstep(cp.maxZ - 30.0, cp.maxZ + 10.0, wp.z)));
-  const inPark = inParkX.mul(inParkZ);
-
   const heightOpenness = smoothstep(0.0, 68.0, wp.y);
   const streetCrevice = smoothstep(0.0, 7.5, wp.y).mul(0.22).add(0.78);
-  const canyonAO = mix(float(0.44), float(1.0), heightOpenness).mul(streetCrevice);
-  return mix(canyonAO, float(1.0), inPark);
+  return mix(float(0.44), float(1.0), heightOpenness).mul(streetCrevice);
 });
 
 // Material caches to prevent duplicate WebGPU WGSL shader compilation across blocks & landmarks
@@ -2458,7 +2444,7 @@ function createWaterMaterial() {
   });
 
   const waveTex = getWaterWaveTexture();
-  const harbourY = ISLAND_BOUNDS ? ISLAND_BOUNDS.waterLevel : -2.2;
+  const harbourY = CITY_BOUNDS ? CITY_BOUNDS.waterLevel : -2.0;
   const pond = smoothstep(harbourY + 1.0, harbourY + 2.0, positionWorld.y);
 
   // [tile size (m), rotation (rad), RMS slope]: incommensurate scales & angles so no pattern repeats
@@ -2522,55 +2508,43 @@ function createWaterMaterial() {
     return mix(body, lake, pond).mul(crestTint);
   })();
 
-  // Night: the lit city seen along the reflected ray. Manhattan is a stack of boxes roughly inscribed in its shoreline;
-  // across the rivers stand the NJ & Queens / Brooklyn waterfronts, and around the park lakes Central Park's rim.
-  // Each is a row of lots with varied heights, lit windows, storefronts & riverside lamps, box-filtered by the unresolved
-  // wave slopes (vertically) & the foreshortened lateral slopes (horizontally), so distant lights smear into streaks.
-  // The boxes & shorelines come from the real geography (city-config.js): [minX, minZ, maxX, maxZ] slabs inscribed in
-  // the island ~1.1 km apart, the NJ shore west of it & the Brooklyn / Queens shore east of it every 900 m of z
-
-  const IB = ISLAND_BOUNDS;
-  const MANHATTAN_BOXES = [];
-  for (let z0 = IB.minZ; z0 < IB.maxZ - 1; z0 += 1140) {
-    const z1 = Math.min(IB.maxZ, z0 + 1140);
-    let x0 = -Infinity, x1 = Infinity;
-    for (let z = z0; z <= z1 + 0.1; z += (z1 - z0) / 8) {
-      const s = getIslandBoundsAtZ(z);
-      x0 = Math.max(x0, s.westX + 40);
-      x1 = Math.min(x1, s.eastX - 40);
-    }
-    if (x1 - x0 > 100) MANHATTAN_BOXES.push([Math.round(x0), Math.round(z0), Math.round(x1), Math.round(z1)]);
-  }
-  const crossings = (polys, z) => {
-    const xs = [];
+  // Night: the lit city seen along the reflected ray. Downtown stands along the harbour's north shore, a wall of lots
+  // rising to the Financial District's towers; to the south the Toronto Islands' dark tree line, with the lake open
+  // beyond. Each is a row of lots with varied heights, lit windows, storefronts & waterfront lamps, box-filtered by the
+  // unresolved wave slopes (vertically) & the foreshortened lateral slopes (horizontally), so distant lights smear into
+  // streaks. The shorelines come from the real geography (city-config.js): the southernmost land of the mainland every
+  // 400 m of x (z(x)), and the islands' north shores
+  const crossingsX = (polys, x) => {
+    const zs = [];
     for (const poly of polys) {
       for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
         const a = poly[i], b = poly[j];
-        if ((a.z > z) !== (b.z > z)) xs.push(a.x + ((z - a.z) * (b.x - a.x)) / (b.z - a.z));
+        if ((a.x > x) !== (b.x > x)) zs.push(a.z + ((x - a.x) * (b.z - a.z)) / (b.x - a.x));
       }
     }
-    return xs;
+    return zs;
   };
-  const westShore = [], eastShore = [];
-  for (let z = IB.minZ - 900; z <= IB.maxZ + 900; z += 900) {
-    const s = getIslandBoundsAtZ(Math.max(IB.minZ, Math.min(IB.maxZ, z)));
-    const w = crossings([NJ_SHORELINE_POLYGON], z).filter((x) => x < s.westX - 150);
-    const e = crossings(LONG_ISLAND_POLYGONS || [], z).filter((x) => x > s.eastX + 100);
-    westShore.push([z, w.length ? Math.max(...w) : s.westX - 1300]);
-    eastShore.push([z, e.length ? Math.min(...e) : s.eastX + 900]);
+  const landPolys = [CITY_LAND, ...Object.values(MAINLAND_POLYGONS || {})];
+  const northShore = [];
+  const southShore = [];
+  for (let x = -7200; x <= 7200; x += 400) {
+    const zs = crossingsX(landPolys, x).filter((z) => z < 6000);
+    northShore.push([x, zs.length ? Math.max(...zs) : 1300]);
+    const iz = crossingsX(ISLAND_POLYGONS || [], x).filter((z) => z > 1400);
+    southShore.push([x, iz.length ? Math.min(...iz) : 9000]);
   }
-  // A shoreline x(z) through its control points, linear from one to the next. Built as a balanced sum of independent
-  // per-segment terms: a 17-deep chain of nested mix() nodes takes TSL's node build exponentially long (getNodeType
+  // A shoreline z(x) through its control points, linear from one to the next. Built as a balanced sum of independent
+  // per-segment terms: a 37-deep chain of nested mix() nodes takes TSL's node build exponentially long (getNodeType
   // recurses unmemoized into every path) and stalls the page
-  const shoreAt = (pts, z) => {
+  const shoreAt = (pts, x) => {
     let terms = [];
     for (let i = 1; i < pts.length; i++) {
-      const [za, xa] = pts[i - 1];
-      const [zb, xb] = pts[i];
-      const t = clamp(z.sub(za).div(zb - za), 0.0, 1.0);
-      const before = float(1.0).sub(step(zb, z));
-      const inSeg = i === 1 ? before : i === pts.length - 1 ? step(za, z) : step(za, z).mul(before);
-      terms.push(inSeg.mul(mix(float(xa), float(xb), t)));
+      const [xa, za] = pts[i - 1];
+      const [xb, zb] = pts[i];
+      const t = clamp(x.sub(xa).div(xb - xa), 0.0, 1.0);
+      const before = float(1.0).sub(step(xb, x));
+      const inSeg = i === 1 ? before : i === pts.length - 1 ? step(xa, x) : step(xa, x).mul(before);
+      terms.push(inSeg.mul(mix(float(za), float(zb), t)));
     }
     while (terms.length > 1) {
       const next = [];
@@ -2579,8 +2553,6 @@ function createWaterMaterial() {
     }
     return terms[0];
   };
-  const CPB = CENTRAL_PARK_BOUNDS;
-  const zSt = (n) => streetZ(n);
   mat.emissiveNode = Fn(() => {
     const night = smoothstep(0.55, 1.35, cityUniforms.uInteriorGlow);
     const P = positionWorld.xz;
@@ -2588,43 +2560,29 @@ function createWaterMaterial() {
     const horiz = max(length(R.xz), 0.001);
     const dir = R.xz.div(horiz);
     const tanEl = R.y.div(horiz);
-    const sgn = vec2(mix(float(-1.0), float(1.0), step(0.0, dir.x)), mix(float(-1.0), float(1.0), step(0.0, dir.y)));
-    const inv = sgn.div(max(abs(dir), vec2(0.0001))).toVar();
+    const invZ = mix(float(-1.0), float(1.0), step(0.0, dir.y)).div(max(abs(dir.y), 0.0001));
 
-    // Nearest Manhattan face entered from outside
-    const tIsland = float(1e5).toVar();
-    for (const [x0, z0, x1, z1] of MANHATTAN_BOXES) {
-      const ta = vec2(x0, z0).sub(P).mul(inv);
-      const tb = vec2(x1, z1).sub(P).mul(inv);
-      const tn = max(min(ta.x, tb.x), min(ta.y, tb.y));
-      const tf = min(max(ta.x, tb.x), max(ta.y, tb.y));
-      tIsland.assign(min(tIsland, mix(float(1e5), tn, step(0.0, tn).mul(step(tn, tf)))));
-    }
-    // Across the rivers: the New Jersey waterfront to the west, Queens & Brooklyn to the east
-    const xWest = shoreAt(westShore, P.y).toVar();
-    const xEast = shoreAt(eastShore, P.y).toVar();
-    const tShoreRaw = mix(xWest, xEast, step(0.0, dir.x)).sub(P.x).mul(inv.x).toVar();
-    const tShore = mix(float(8000.0), clamp(tShoreRaw, 60.0, 8000.0), step(0.0, tShoreRaw)).toVar();
-    const onIsland = step(tIsland, tShore);
-    // Park lakes: the walls of buildings around Central Park's rectangle, seen from inside it
-    const ca = vec2(CPB.minX, CPB.minZ).sub(P).mul(inv);
-    const cb = vec2(CPB.maxX, CPB.maxZ).sub(P).mul(inv);
-    const tPark = clamp(min(max(ca.x, cb.x), max(ca.y, cb.y)), 60.0, 4200.0);
+    // North: the city's shore; south: the islands' (or nothing, out over the lake)
+    const zN = shoreAt(northShore, P.x).toVar();
+    const zS = shoreAt(southShore, P.x).toVar();
+    const north = float(1.0).sub(step(0.0, dir.y));
+    const tRaw = mix(zS, zN, north).sub(P.y).mul(invZ).toVar();
+    const tShore = mix(float(9000.0), clamp(tRaw, 40.0, 9000.0), step(0.0, tRaw)).toVar();
+    const onCity = north.mul(step(tShore, 8999.0));
     const lake = step(0.5, pond);
 
-    const tHit = mix(min(tIsland, tShore), tPark, lake).toVar();
+    const tHit = mix(tShore, float(70.0), lake).toVar();
     const hit = P.add(dir.mul(tHit)).toVar();
     const hRefl = tHit.mul(tanEl); // height up the facades that this reflection sees
     const u = hit.x.add(hit.y); // runs along whichever face was hit
 
-    // Skyline heights: Midtown (60th to 28th St) & the Financial District (south of Chambers St) stand tallest
-    const midtown = smoothstep(zSt(80), zSt(60), hit.y).mul(float(1.0).sub(smoothstep(zSt(28), zSt(14), hit.y)));
-    const manhattanS = mix(float(70.0), float(215.0), max(midtown, smoothstep(4400.0, 4950.0, hit.y)));
-    // Across the rivers: the Jersey City towers (Newport to Exchange Place) & Long Island City (opposite 60th-26th St)
-    const jerseyCity = smoothstep(3300.0, 3900.0, hit.y).mul(float(1.0).sub(smoothstep(6100.0, 6500.0, hit.y))).mul(step(hit.x, 0.0));
-    const lic = smoothstep(zSt(62), zSt(57), hit.y).mul(float(1.0).sub(smoothstep(zSt(30), zSt(25), hit.y))).mul(step(0.0, hit.x));
-    const S = mix(mix(mix(float(30.0), float(120.0), max(jerseyCity, lic)), manhattanS, onIsland), float(120.0), lake);
-    const brightness = mix(mix(float(0.6), float(1.0), onIsland), float(0.8), lake);
+    // Skyline heights: the Financial District, South Core & CityPlace (Spadina to Jarvis) stand tallest; the islands
+    // are a low tree line with a few lamps
+    const core = smoothstep(-1900.0, -1300.0, hit.x).mul(float(1.0).sub(smoothstep(500.0, 1100.0, hit.x)));
+    const humberBay = smoothstep(-7000.0, -6200.0, hit.x).mul(float(1.0).sub(smoothstep(-5200.0, -4600.0, hit.x)));
+    const cityS = mix(float(40.0), float(230.0), max(core, humberBay.mul(0.6)));
+    const S = mix(mix(float(9.0), cityS, onCity), float(30.0), lake);
+    const brightness = mix(mix(float(0.18), float(1.0), onCity), float(0.7), lake).mul(step(tHit, 8999.0));
 
     // Footprint on the facades (m): unresolved slopes tilt the reflection ±2σ, laterally foreshortened at grazing views
     const sigma2 = sqrt(variance).mul(2.0);
@@ -2659,10 +2617,9 @@ function createWaterMaterial() {
     const city = tint.mul(windows.mul(upper).mul(0.95))
       .add(color(0xffcf9a).mul(ground.mul(shopLit).mul(0.4)))
       .add(color(0xffd9b0).mul(lamps));
-    const treeline = mix(float(1.0), smoothstep(0.2, 0.42, tanEl), lake); // lake shores: only towers above the trees
-    // The analytic skyline only models the rivers along the detailed island: fade it out up the Hudson & Harlem River
-    // and down the Upper Bay, where its shorelines no longer match the boroughs
-    const region = smoothstep(IB.minZ - 400.0, IB.minZ - 100.0, P.y).mul(float(1.0).sub(smoothstep(IB.maxZ + 200.0, IB.maxZ + 600.0, P.y)));
+    const treeline = mix(float(1.0), smoothstep(0.2, 0.42, tanEl), lake); // ponds: only towers above the trees
+    // The analytic skyline only models the harbour & the near lake: fade it out far up or down the shore
+    const region = float(1.0).sub(smoothstep(6000.0, 7200.0, abs(P.x)));
     return city.mul(brightness).mul(treeline).mul(fresnel).mul(night).mul(region);
   })();
 

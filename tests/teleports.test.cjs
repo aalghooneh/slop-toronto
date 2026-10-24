@@ -5,30 +5,29 @@ const test = require('node:test');
 const vm = require('node:vm');
 
 const read = (path) => readFileSync(join(__dirname, '..', path), 'utf8');
-let TELEPORT_LOCATIONS, LANDMARK_SITES, blockAt, nearestRoads, getIslandBoundsAtZ;
+let TELEPORT_LOCATIONS, POINTS, blockAt, nearestRoads, landDistance;
 test.before(async () => {
-  ({ TELEPORT_LOCATIONS, LANDMARK_SITES, blockAt, nearestRoads, getIslandBoundsAtZ } = await import('../js/city-config.js'));
+  ({ TELEPORT_LOCATIONS, POINTS, blockAt, nearestRoads, landDistance } = await import('../js/city-config.js'));
 });
 
-test('every teleport button has a destination on a real roadway inside Manhattan', () => {
+test('every teleport button has a destination on a real roadway inside downtown', () => {
   const buttons = [...read('index.html').matchAll(/data-teleport="([^"]+)"/g)].map((match) => match[1]);
   assert.deepEqual(Object.keys(TELEPORT_LOCATIONS).sort(), buttons.sort());
   for (const [name, point] of Object.entries(TELEPORT_LOCATIONS)) {
     assert.ok(Number.isFinite(point.heading), `${name} has a heading`);
     assert.equal(blockAt(point.x, point.z), null, `${name} lands outside building blocks`);
-    const shore = getIslandBoundsAtZ(point.z);
-    assert.ok(point.x > shore.westX + 8 && point.x < shore.eastX - 8, `${name} stays on the island`);
+    assert.ok(landDistance(point.x, point.z) > 8, `${name} stays on downtown's ground`);
     const nearby = nearestRoads(point.x, point.z, 20);
     assert.ok(nearby.some(({ road, dist }) => dist < road.w / 2), `${name} lands within a street's width`);
   }
 });
 
-test('One World Trade Center arrives on Vesey Street facing the tower', () => {
-  const point = TELEPORT_LOCATIONS.owtc;
-  const tower = LANDMARK_SITES['One World Trade Center'];
-  assert.ok(nearestRoads(point.x, point.z, 20).some(({ road, dist }) => road.name === 'Vesey St' && dist < 1));
+test('the CN Tower arrives on Bremner Boulevard facing the tower', () => {
+  const point = TELEPORT_LOCATIONS.cntower;
+  const tower = POINTS.cnTower;
+  assert.ok(nearestRoads(point.x, point.z, 20).some(({ road, dist }) => road.name === 'Bremner Blvd' && dist < 5));
   const distance = Math.hypot(tower.x - point.x, tower.z - point.z);
-  assert.ok(distance > 100 && distance < 220, 'leave space for the tower view');
+  assert.ok(distance > 60 && distance < 220, 'leave space for the tower view');
   const alignment = ((tower.x - point.x) * Math.sin(point.heading) + (tower.z - point.z) * Math.cos(point.heading)) / distance;
   assert.ok(alignment > 0.999, 'face the tower rather than the neighboring buildings');
 });
@@ -39,7 +38,7 @@ test('preset and map teleports share arrival resets and mark the resolved landin
   const end = main.indexOf('  const openMapBtn', start);
   const handlers = new Map();
   const calls = [];
-  const landed = { x: -305.7, z: 5210 };
+  const landed = { x: -879.2, z: 964.1 };
   let map;
   const environment = {
     TELEPORT_LOCATIONS,
@@ -53,7 +52,7 @@ test('preset and map teleports share arrival resets and mark the resolved landin
     getLocationLabel: (x, z) => `${x}, ${z}`,
     cityBlocks: { allBlocks: [] },
     trafficSystem: {},
-    NYCMapSystem: class {
+    CityMapSystem: class {
       constructor(options) { this.onTeleport = options.onTeleport; map = this; }
     },
     teleportButtons: Object.keys(TELEPORT_LOCATIONS).map((key) => ({

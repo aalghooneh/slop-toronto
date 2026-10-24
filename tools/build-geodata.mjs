@@ -1,234 +1,152 @@
-// tools/build-geodata.mjs — writes js/nyc-geodata.js (see geo-base.mjs for the frame and the data sources)
+// tools/build-geodata.mjs — writes js/toronto-geodata.js (see geo-base.mjs for the frame and the data sources)
 // usage: GEO_DATA=tools/data node --max-old-space-size=8192 tools/build-geodata.mjs [out.js]
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { geo, toWorld, rdp, rdpRing, ringArea, bbox, load, log, centroid } from './geo-base.mjs';
-import { pieces, STREETS, AVENUES } from './geo-streets.mjs';
-import { blocks, innerRing, roads, PLAZAS, CUT_Z, STRIP, SIDEWALK } from './geo-blocks.mjs';
-import { parkShapes, piers, bridges, nj, islands, manhattanSouth, manhattanNorth } from './geo-extra.mjs';
+import { geo, toWorld, rdp, bbox, load, log } from './geo-base.mjs';
+import { ways, expressways, ramps, rails } from './geo-streets.mjs';
+import { blocks, innerRing, STRIP, SIDEWALK } from './geo-blocks.mjs';
+import { heightGrid, parkShapes, waterShapes, towers, landmarks, piers, runways, mainlandPieces, islands } from './geo-extra.mjs';
 import { buildRoadGraph } from './geo-roadgraph.mjs';
 
-const OUT = process.argv[2] || fileURLToPath(new URL('../js/nyc-geodata.js', import.meta.url));
+const OUT = process.argv[2] || fileURLToPath(new URL('../js/toronto-geodata.js', import.meta.url));
 const q = (v) => Math.round(v * 10) / 10;
 const flat = (pts) => pts.flatMap(([x, z]) => [q(x), q(z)]);
-const inDetail = (z) => z > CUT_Z - 250;
+const { DETAIL, DETAIL_CUT } = geo;
+const PAD = 400;
+const near = (pts, pad = PAD) => pts.some(([x, z]) => x > DETAIL.x0 - pad && x < DETAIL.x1 + pad && z > DETAIL.z0 - pad && z < DETAIL.z1 + pad);
 
-// --- Broadway as one ordered polyline (north to south) through the detailed island --------------------------------
-function broadwayLine() {
-  const segs = roads.filter((s) => s.name === 'BROADWAY').map((s) => (s.z0 < s.z1 ? [[s.x0, s.z0], [s.x1, s.z1]] : [[s.x1, s.z1], [s.x0, s.z0]]));
-  // Keep the carriageways' centre: bucket by z, average x of the pieces covering each 10 m of z
-  const zmin = Math.max(CUT_Z, Math.min(...segs.map((s) => s[0][1])));
-  const zmax = Math.max(...segs.map((s) => s[1][1]));
-  const line = [];
-  for (let z = zmin; z <= zmax; z += 10) {
-    const xs = [];
-    for (const [[xa, za], [xb, zb]] of segs) if (z >= za && z <= zb && zb > za) xs.push(xa + ((z - za) * (xb - xa)) / (zb - za));
-    if (!xs.length) continue;
-    // dual carriageways: midpoint of the cluster nearest the previous point
-    xs.sort((a, b) => a - b);
-    const prev = line.length ? line[line.length - 1][0] : xs[0];
-    const near = xs.filter((x) => Math.abs(x - prev) < 60);
-    const pick = near.length ? near : [xs.reduce((a, b) => (Math.abs(b - prev) < Math.abs(a - prev) ? b : a))];
-    line.push([(Math.min(...pick) + Math.max(...pick)) / 2, z]);
-  }
-  return rdp(line, 1.5);
-}
-const broadway = broadwayLine();
-log(`Broadway: ${broadway.length} pts from z=${Math.round(broadway[0][1])} to ${Math.round(broadway[broadway.length - 1][1])}`);
-
-// --- Roads (at-grade centreline pieces merged into polylines per street & width), for maps & the road graph ---------
+// --- Named roads (merged per street, direction & width) for the maps, labels & lookups --------------------------------
 function mergeRoads() {
   const byKey = new Map();
-  for (const p of pieces) {
-    if (p.level !== '13' || !['1', '2'].includes(p.rw)) continue;
-    if (/DRIVEWAY|PEDESTRIAN|ALLEY|CONNECTOR/.test(p.name)) continue;
-    if (!inDetail(Math.min(p.z0, p.z1))) continue;
-    const key = `${p.name}|${Math.round(p.w)}|${p.dir}|${p.lanes}|${p.rw}`;
+  for (const w of ways) {
+    if (!w.atGrade || !w.name || !near(w.pts, 60)) continue;
+    const key = `${w.name}|${Math.round(w.w)}|${w.dir}|${w.lanes}`;
     if (!byKey.has(key)) byKey.set(key, []);
-    byKey.get(key).push([[p.x0, p.z0], [p.x1, p.z1]]);
+    byKey.get(key).push(w);
   }
   const out = [];
-  for (const [key, segs] of byKey) {
-    const [name, w, dir, lanes, rw] = key.split('|');
-    // chain pieces end to start
-    const ends = new Map();
-    const k = (p) => `${q(p[0])},${q(p[1])}`;
-    for (const s of segs) ends.set(k(s[0]), s);
+  for (const [, list] of byKey) {
+    // chain ways end to start through shared nodes
+    const byStart = new Map(list.map((w) => [w.nodes[0], w]));
     const used = new Set();
-    for (const s of segs) {
-      if (used.has(s)) continue;
-      // walk back to the first piece of this chain
-      let first = s;
-      const seen = new Set([s]);
+    for (const w of list) {
+      if (used.has(w)) continue;
+      let first = w;
+      const seen = new Set([w]);
       for (;;) {
-        const prev = segs.find((t) => !seen.has(t) && !used.has(t) && k(t[1]) === k(first[0]));
+        const prev = list.find((u) => !seen.has(u) && !used.has(u) && u.nodes[u.nodes.length - 1] === first.nodes[0]);
         if (!prev) break;
         seen.add(prev);
         first = prev;
       }
-      const line = [first[0]];
+      const line = [];
       let cur = first;
       while (cur && !used.has(cur)) {
         used.add(cur);
-        line.push(cur[1]);
-        cur = ends.get(k(cur[1]));
+        line.push(...(line.length ? cur.pts.slice(1) : cur.pts));
+        cur = byStart.get(cur.nodes[cur.nodes.length - 1]);
       }
-      out.push({ name, w: +w, dir, lanes: +lanes, hw: rw === '2', pts: rdp(line, 0.8) });
+      out.push({ name: w.name, w: w.w, dir: w.dir, lanes: w.lanes, hw: false, pts: rdp(line, 0.8) });
     }
   }
+  for (const e of expressways) if (near(e.pts)) out.push({ name: e.name, w: e.w, dir: 1, lanes: e.lanes, hw: true, pts: e.pts });
   return out;
 }
 const roadLines = mergeRoads();
 log(`${roadLines.length} road polylines (${roadLines.reduce((t, r) => t + r.pts.length, 0)} pts)`);
 
-// --- Central Park: features from OpenStreetMap ------------------------------------------------------------------------
-const osmCP = load('osm_centralpark.json');
-const cpPark = parkShapes.find((p) => p.name === 'Central Park');
-const cpBB = bbox(cpPark.rings.reduce((a, r) => (Math.abs(ringArea(r)) > Math.abs(ringArea(a)) ? r : a)));
-const insideCP = ([x, z]) => x > cpBB.x0 - 5 && x < cpBB.x1 + 5 && z > cpBB.z0 - 5 && z < cpBB.z1 + 5;
-const cp = { bounds: { minX: q(cpBB.x0), maxX: q(cpBB.x1), minZ: q(cpBB.z0), maxZ: q(cpBB.z1) }, outline: null, water: [], lawns: [], drives: [], paths: [], sites: [] };
-cp.outline = flat(rdpRing(cpPark.rings.reduce((a, r) => (Math.abs(ringArea(r)) > Math.abs(ringArea(a)) ? r : a)), 0.8));
-const WATER_NAMES = new Set(['Jacqueline Kennedy Onassis Reservoir', 'The Lake', 'The Pond', 'Harlem Meer', 'Turtle Pond', 'Conservatory Water', 'The Pool']);
-const LAWN_NAMES = new Set(['Sheep Meadow', 'The Great Lawn', 'North Meadow', 'Great Hill', 'Heckscher Ballfields', 'East Meadow', 'Cedar Hill', 'Pilgrim Hill', 'The Dene', 'Conservatory Garden', 'Strawberry Fields']);
-const SITE_NAMES = ['Bethesda Fountain', 'Bow Bridge', 'Belvedere Castle', 'Gapstow Bridge', "Cleopatra's Needle", 'Central Park Carousel', 'The Dairy (Visitor Center and Gift Shop)', 'Delacorte Theater', 'Kerbs Boathouse', 'The Arsenal', 'Central Park Zoo', 'Columbus Circle', 'Pulitzer Fountain', 'Charles A. Dana Discovery Center', 'Loeb Boathouse', 'Wollman Rink', 'Bethesda Terrace'];
-function elemRing(e) {
-  if (e.type === 'way') return (e.geometry || []).map((g) => toWorld(g.lon, g.lat));
-  let best = [];
-  for (const m of e.members || []) if (m.role === 'outer' && m.geometry && m.geometry.length > best.length) best = m.geometry.map((g) => toWorld(g.lon, g.lat));
-  return best;
-}
-function elemRings(e) {
-  // relations (The Lake, Turtle Pond, Harlem Meer) come as several outer ways: chain them into closed rings
-  if (e.type === 'way') return [(e.geometry || []).map((g) => toWorld(g.lon, g.lat))];
-  const parts = (e.members || []).filter((m) => m.role === 'outer' && m.geometry).map((m) => m.geometry.map((g) => toWorld(g.lon, g.lat)));
-  const rings = [];
-  const close = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]) < 0.5;
-  while (parts.length) {
-    let ring = parts.shift();
-    for (let guard = 0; guard < 500 && !close(ring[0], ring[ring.length - 1]); guard++) {
-      const i = parts.findIndex((p) => close(p[0], ring[ring.length - 1]) || close(p[p.length - 1], ring[ring.length - 1]));
-      if (i < 0) break;
-      const p = parts.splice(i, 1)[0];
-      ring = ring.concat(close(p[0], ring[ring.length - 1]) ? p.slice(1) : p.reverse().slice(1));
-    }
-    rings.push(ring);
-  }
-  return rings;
-}
-const seenSites = new Set();
-for (const e of osmCP.elements) {
-  const t = e.tags || {};
-  const n = t.name || '';
-  const isWater = t.natural === 'water' && (WATER_NAMES.has(n) || (!n && t.water === 'pond'));
-  if (isWater) {
-    for (const r of elemRings(e)) {
-      if (r.length < 4 || !insideCP(centroid(r)) || Math.abs(ringArea(r)) < 200) continue;
-      const s = rdpRing(r.slice(0, -1), 0.6);
-      if (ringArea(s) > 0) s.reverse();
-      cp.water.push({ name: n, ring: flat(s) });
-    }
-  } else if (LAWN_NAMES.has(n) && (t.landuse === 'grass' || t.leisure)) {
-    const r = elemRing(e);
-    if (r.length > 3 && insideCP(centroid(r))) {
-      const s = rdpRing(r.slice(0, -1), 0.8);
-      if (ringArea(s) > 0) s.reverse();
-      cp.lawns.push({ name: n, ring: flat(s) });
-    }
-  } else if (e.type === 'way' && t.highway && /^(East Drive|West Drive|Center Drive|Terrace Drive)$/.test(n)) {
-    const r = elemRing(e);
-    if (r.length > 1 && insideCP(r[0])) cp.drives.push({ name: n, w: t.highway === 'service' ? 6 : 9, pts: flat(rdp(r, 0.8)) });
-  } else if (e.type === 'way' && t.highway && /Transverse/.test(n) && t.highway !== 'footway') {
-    const r = elemRing(e);
-    if (r.length > 1) cp.drives.push({ name: n, w: 10, transverse: true, pts: flat(rdp(r, 0.8)) });
-  } else if (SITE_NAMES.includes(n) && !seenSites.has(n)) {
-    const r = elemRing(e);
-    if (!r.length) continue;
-    const b = bbox(r);
-    seenSites.add(n);
-    // long axis of the outline (bridges: the span) by principal component
-    const [mx, mz] = centroid(r);
-    let sxx = 0, szz = 0, sxz = 0;
-    for (const [x, z] of r) { sxx += (x - mx) ** 2; szz += (z - mz) ** 2; sxz += (x - mx) * (z - mz); }
-    const ang = 0.5 * Math.atan2(2 * sxz, sxx - szz);
-    cp.sites.push({ name: n, x: q((b.x0 + b.x1) / 2), z: q((b.z0 + b.z1) / 2), w: q(b.x1 - b.x0), d: q(b.z1 - b.z0), ang: Math.round(ang * 1000) / 1000 });
-  }
-}
-// Transverses from the centreline (OSM marks parts of them as footways)
-for (const p of roadLines) if (/TRANSVERSE/.test(p.name)) cp.drives.push({ name: p.name, w: p.w || 10, transverse: true, pts: flat(p.pts) });
-log(`Central Park: ${cp.water.length} water bodies, ${cp.lawns.length} lawns, ${cp.drives.length} drive pieces, ${cp.sites.length} sites`);
-
-// --- Landmarks: real footprints (grid-aligned bounding boxes) from OSM ---------------------------------------------
-const osmLM = load('osm_landmarks.json');
-const landmarks = {};
-for (const e of osmLM.elements) {
-  const t = e.tags || {};
-  const r = elemRing(e);
-  if (!r.length || !t.name) continue;
-  const b = bbox(r);
-  const area = Math.abs(ringArea(r));
-  const prev = landmarks[t.name];
-  if (prev && prev.area >= area) continue;
-  landmarks[t.name] = { x: q((b.x0 + b.x1) / 2), z: q((b.z0 + b.z1) / 2), w: q(b.x1 - b.x0), d: q(b.z1 - b.z0), h: t.height ? parseFloat(t.height) : null, area: Math.round(area), ring: flat(rdpRing(r.slice(0, -1), 0.4)) };
-}
-log(`${Object.keys(landmarks).length} landmark footprints`);
-
-// --- Assemble -----------------------------------------------------------------------------------------------------------
-const streetsOut = STREETS.filter((s) => inDetail(s.z)).map((s) => ({ n: s.n, z: s.z, segs: s.segs.map(([a, b, d, w]) => [q(a), q(b), d, q(w)]) }));
-const avenuesOut = AVENUES.map((a) => ({
-  id: a.id, label: a.label, x: a.x,
-  segs: a.segs.filter((s) => s.z1 > CUT_Z - 200).map((s) => ({ z0: Math.max(s.z0, CUT_Z - 200), z1: s.z1, dir: s.dir, w: s.w, lanes: s.lanes, names: s.names }))
-})).filter((a) => a.segs.length);
-
-// --- Points of note from their real coordinates (bridge towers beyond the island, the statue, ferry terminals) --------
+// --- Points of note from their real coordinates ------------------------------------------------------------------------
 const POINTS = {
-  gwbManhattanTower: [40.85012, -73.94693], gwbNJTower: [40.85361, -73.95804],
-  verrazzanoBrooklynTower: [40.60799, -74.03864], verrazzanoStatenTower: [40.60458, -74.05385],
-  statueOfLiberty: [40.68925, -74.0445], whitehallTerminal: [40.70123, -74.0131], pier17: [40.70578, -74.00185],
-  castleClinton: [40.70355, -74.01686], peterMinuitPlaza: [40.70187, -74.01334], bowlingGreen: [40.70496, -74.01352]
+  cnTower: [43.642566, -79.387057], rogersCentre: [43.641438, -79.389353], unionStation: [43.645195, -79.380601],
+  nathanPhillips: [43.652313, -79.383457], dundasSquare: [43.656171, -79.380299], stLawrenceMarket: [43.648693, -79.371437],
+  distillery: [43.650261, -79.359556], queensPark: [43.662151, -79.392392], kensington: [43.654596, -79.400707],
+  harbourfront: [43.638738, -79.380714], ferryTerminal: [43.640468, -79.375317], billyBishop: [43.628333, -79.396111],
+  ontarioPlace: [43.628889, -79.415556], cinesphere: [43.629412, -79.414688], bmoField: [43.633221, -79.418555],
+  centreIsland: [43.618997, -79.374128], gibraltarPoint: [43.613139, -79.384503], wardsIsland: [43.630867, -79.354155],
+  hanlansPoint: [43.623333, -79.393889], leslieSpitTip: [43.613167, -79.330003], yongeDundas: [43.656171, -79.380299],
+  rom: [43.667710, -79.394777], casaLoma: [43.678037, -79.409443], princeEdwardViaduct: [43.676111, -79.361667],
+  flatiron: [43.648597, -79.373857], sugarBeach: [43.643222, -79.367581], hto: [43.638900, -79.385667]
 };
 const points = Object.fromEntries(Object.entries(POINTS).map(([k, [lat, lon]]) => [k, toWorld(lon, lat).map(q)]));
 
+// --- Rails & streetcar tracks over (and a little beyond) downtown -------------------------------------------------------
+const railOut = rails.filter((r) => !r.tunnel && near(r.pts, 200))
+  .map((r) => [r.kind, r.service, r.name, r.bridge ? 1 : 0, flat(r.pts)]);
+
+// --- Street furniture & stops (OpenStreetMap nodes): signals, TTC subway entrances & streetcar / bus stops, Canada Post
+//     boxes, hydrants, street trees & lamps, Bike Share Toronto docks, benches & bins -------------------------------------
+const furniture = { signals: [], crossings: [], subway: [], stops: [], postBoxes: [], hydrants: [], trees: [], lamps: [], bikeShare: [], benches: [], bins: [], ferry: [] };
+for (const e of load('osm_nodes.json').elements) {
+  if (e.type !== 'node') continue;
+  const t = e.tags || {};
+  const [x, z] = toWorld(e.lon, e.lat).map(q);
+  if (!near([[x, z]], 30)) continue;
+  if (t.highway === 'traffic_signals') furniture.signals.push(x, z);
+  else if (t.highway === 'crossing' && t.crossing !== 'unmarked') furniture.crossings.push(x, z);
+  else if (t.railway === 'subway_entrance' || t.entrance === 'subway') furniture.subway.push([x, z, t.name || '']);
+  else if (t.railway === 'tram_stop' || (t.highway === 'bus_stop' && t.public_transport !== 'platform')) furniture.stops.push([x, z, t.railway === 'tram_stop' ? 1 : 0, t.name || '']);
+  else if (t.amenity === 'post_box') furniture.postBoxes.push(x, z);
+  else if (t.emergency === 'fire_hydrant') furniture.hydrants.push(x, z);
+  else if (t.natural === 'tree') furniture.trees.push(x, z);
+  else if (t.highway === 'street_lamp') furniture.lamps.push(x, z);
+  else if (t.amenity === 'bicycle_rental') furniture.bikeShare.push(x, z);
+  else if (t.amenity === 'bench') furniture.benches.push(x, z);
+  else if (t.amenity === 'waste_basket') furniture.bins.push(x, z);
+  else if (t.amenity === 'ferry_terminal') furniture.ferry.push([x, z, t.name || '']);
+}
+log(`furniture: ${Object.entries(furniture).map(([k, v]) => `${k} ${Array.isArray(v[0]) ? v.length : v.length / 2}`).join(', ')}`);
+
+// --- Assemble -----------------------------------------------------------------------------------------------------------
 const GEO = {
   version: 1,
-  frame: { bearingDeg: q((geo.THETA * 180) / Math.PI * 10) / 10, origin: '5th Ave & 42nd St (centreline)', units: 'm', cutZ: CUT_Z, strip: STRIP, sidewalk: SIDEWALK },
-  manhattan: flat(manhattanSouth),
-  upperManhattan: flat(manhattanNorth),
-  innerShore: flat(innerRing),
-  islands: Object.fromEntries(Object.entries(islands).map(([k, r]) => [k, flat(r)])),
-  boroughs: {
-    brooklyn: geo.boroughs.brooklyn.map(flat),
-    queens: geo.boroughs.queens.map(flat),
-    bronx: geo.boroughs.bronx.map(flat),
-    statenIsland: geo.boroughs.statenIsland.map(flat),
-    newJersey: [flat(nj)]
+  frame: {
+    bearingDeg: q((geo.THETA * 180) / Math.PI * 10) / 10,
+    origin: 'Yonge St & Queen St (centreline)',
+    units: 'm',
+    strip: STRIP,
+    sidewalk: SIDEWALK,
+    detail: DETAIL,
+    detailCut: DETAIL_CUT,
+    // [lat0, lon0, metres per degree of longitude & latitude, bearing (radians), origin (u, v)]: see city-config.js LL()
+    ll: geo.FRAME_LL
   },
-  streets: streetsOut,
-  avenues: avenuesOut,
-  broadway: flat(broadway),
-  plazas: PLAZAS.map((p) => ({ name: p.name, a: p.a.map(q), b: p.b.map(q), w: p.w })),
-  roads: roadLines.map((r) => [r.name, r.w ? q(r.w) : 0, r.dir || '', r.lanes || 0, r.hw ? 1 : 0, flat(r.pts)]),
-  // Street centreline graph for Lower Manhattan and northern non-grid roads (geo-roadgraph.mjs): nodes [x, z, ...],
-  // links [node a, node b, name index, curb-to-curb width, travel lanes, direction (1: a -> b, -1: b -> a, 0: both),
-  // inner shape points [x, z, ...]]
+  downtown: flat(geo.downtown),
+  innerShore: flat(innerRing),
+  mainland: Object.fromEntries(Object.entries(mainlandPieces).map(([k, r]) => [k, flat(r)])),
+  islands: islands.map(flat),
+  roads: roadLines.map((r) => [r.name, q(r.w), r.dir, r.lanes, r.hw ? 1 : 0, flat(r.pts)]),
+  // Street centreline graph (geo-roadgraph.mjs): nodes [x, z, ...], links [node a, node b, name index, curb-to-curb width,
+  // travel lanes, direction (1: a -> b, -1: b -> a, 0: both), inner shape points [x, z, ...]]
   roadGraph: buildRoadGraph(),
-  // [outline, lot rects, park share, park name, rectangular, frontage frames [[θ, px, pz, lot rects in the frame], ...] | 0]
+  // [outline, lot rects, park share, park name, rectangular, frontage frames [[θ, px, pz, lot rects in the frame], ...] | 0,
+  //  rail share, surface parking share, lot height hints [[tallest, mean, built share], ...], frame lot hints | 0]
   blocks: blocks.map((b) => [flat(b.poly), b.rects.map((r) => r.map(q)), b.park || 0, b.parkName || '', b.rect ? 1 : 0,
-    b.frames ? b.frames.map(([th, px, pz, rs]) => [Math.round(th * 1e4) / 1e4, q(px), q(pz), rs.map((r) => r.map(q))]) : 0]),
-  parks: parkShapes.map((p) => ({ name: p.name, cat: p.cat, acres: p.acres, rings: p.rings.map(flat) })),
-  centralPark: cp,
-  piers: piers.map((p) => ({ name: p.name, cx: q(p.cx), cz: q(p.cz), len: q(p.len), wid: q(p.wid), ang: Math.round(p.ang * 1e4) / 1e4, ring: flat(p.ring) })),
-  bridges: Object.fromEntries(Object.entries(bridges).map(([k, b]) => [k, { a: b.a.map(q), mid: b.mid.map(q), dir: [Math.round(b.ux * 1e5) / 1e5, Math.round(b.uz * 1e5) / 1e5] }])),
-  landmarks,
+    b.frames ? b.frames.map(([th, px, pz, rs]) => [Math.round(th * 1e4) / 1e4, q(px), q(pz), rs.map((r) => r.map(q))]) : 0,
+    b.rail || 0, b.parking || 0, b.hints, b.frameHints || 0]),
+  parks: parkShapes.map((p) => ({ name: p.name, cat: p.cat, area: p.area, rings: p.rings.map(flat) })),
+  water: waterShapes.map((w) => ({ name: w.name, kind: w.kind, ring: flat(w.ring) })),
+  // Real towers of 40 m and up: outline, height, base (building parts stacked on podia start above the ground)
+  towers: towers.map((t) => ({ name: t.name, h: t.h, minH: t.minH, colour: t.colour, material: t.material, roof: t.roof, ring: flat(t.ring) })),
+  landmarks: Object.fromEntries(Object.entries(landmarks).map(([k, l]) => [k, { ...l, ring: flat(l.ring) }])),
+  expressways: expressways.filter((e) => near(e.pts, 3000)).map((e) => ({ name: e.name, lanes: e.lanes, w: q(e.w), pts: flat(e.pts) })),
+  ramps: ramps.filter((r) => near(r.pts, 200)).map((r) => ({ name: r.name, lanes: r.lanes, w: q(r.w), dir: r.dir, bridge: r.bridge ? 1 : 0, pts: flat(r.pts) })),
+  rails: railOut,
+  piers: piers.filter((p) => near(p.ring || p.line, 3000)).map((p) => (p.ring ? { name: p.name, kind: p.kind, ring: flat(p.ring) } : { name: p.name, kind: p.kind, w: p.w, line: flat(p.line) })),
+  runways: runways.map((r) => ({ kind: r.kind, ref: r.ref, w: r.w, closed: r.closed ? 1 : 0, pts: flat(r.pts) })),
+  furniture,
+  // The real buildings' heights over downtown (geo-extra.mjs): 4 m cells, (value, run) byte pairs, value x 3 m
+  heightGrid,
   points
 };
+void bbox;
 
 const json = JSON.stringify(GEO);
-const header = `// js/nyc-geodata.js — GENERATED by tools/build-geodata.mjs, do not edit by hand.
-// Real New York geography in the simulation's world frame: 1 unit = 1 m, x = Manhattan-grid east, z = grid south,
-// origin at the centreline intersection of 5th Ave & 42nd St, axes turned ${GEO.frame.bearingDeg}° from true north.
+const header = `// js/toronto-geodata.js — GENERATED by tools/build-geodata.mjs, do not edit by hand.
+// Real Toronto geography in the simulation's world frame: 1 unit = 1 m, x = street-grid east, z = grid south,
+// origin at the centreline intersection of Yonge St & Queen St, axes turned ${GEO.frame.bearingDeg}° from true north.
 // Polygons & polylines are flat [x0, z0, x1, z1, ...] arrays.
-// Sources: NYC DCP Borough Boundaries, NYC Street Centerline (CSCL) & NYC Parks Properties (NYC Open Data);
-// Central Park features, piers, landmark footprints & the New Jersey shore © OpenStreetMap contributors (ODbL).
+// Sources: © OpenStreetMap contributors (ODbL): Lake Ontario's shore & the Toronto Islands, streets, rail, parks, water,
+// building outlines & heights, piers and the island airport.
 `;
 fs.writeFileSync(OUT, `${header}export const GEO = ${json};\n`);
 log(`wrote ${OUT} (${(fs.statSync(OUT).size / 1024).toFixed(0)} KB)`);

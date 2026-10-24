@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 test('geodata builds with default paths in a checkout containing spaces and non-ASCII characters', { timeout: 180000 }, async () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'New York 東京 '));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'Toronto 東京 '));
   try {
     fs.mkdirSync(path.join(dir, 'tools'));
     fs.mkdirSync(path.join(dir, 'js'));
@@ -23,7 +23,7 @@ test('geodata builds with default paths in a checkout containing spaces and non-
     });
     assert.ifError(result.error);
     assert.equal(result.status, 0, result.stderr + result.stdout);
-    const { GEO } = await import(pathToFileURL(path.join(dir, 'js/nyc-geodata.js')).href);
+    const { GEO } = await import(pathToFileURL(path.join(dir, 'js/toronto-geodata.js')).href);
     assert.ok(GEO.roadGraph.links.length > 0);
     assert.ok(GEO.blocks.length > 0);
   } finally {

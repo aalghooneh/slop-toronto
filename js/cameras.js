@@ -1,21 +1,21 @@
 import * as THREE from 'three/webgpu';
-import { bryantParkLawn } from './landmarks.js';
+import { LANDMARK_SITES, POINTS, TELEPORT_LOCATIONS } from './city-config.js';
 
 // js/cameras.js
 // Multi-camera system supporting Third-Person Chase (with mouse/touch orbit + zoom),
-// Low-Angle Action Cam, POV/Cockpit Cam, 7 Iconic NYC Architectural Cameras, and Auto-Director Drone.
+// Low-Angle Action Cam, POV/Cockpit Cam, 7 Scenic Toronto Cameras, and Auto-Director Drone.
 
 const CAMERA_PRESETS = [
   { id: 'chase',       name: '3rd-Person Chase',         short: 'Chase',       category: 'follow', fov: 56 },
   { id: 'action',      name: 'Low-Angle Action',         short: 'Action',      category: 'follow', fov: 60 },
   { id: 'pov',         name: 'First-Person / Cockpit',   short: 'POV / Dash',  category: 'follow', fov: 68 },
-  { id: 'centralPark', name: 'Central Park Oasis',       short: 'Central Pk',  category: 'scenic', fov: 52 },
-  { id: 'fifthAve',    name: '5th Ave & Empire State',   short: '5th Ave',     category: 'scenic', fov: 48 },
-  { id: 'timesSquare', name: 'Times Square Crossroads',  short: 'Times Sq',    category: 'scenic', fov: 58 },
-  { id: 'chryslerGCT', name: '42nd St · Chrysler & GCT', short: 'Chrysler',    category: 'scenic', fov: 50 },
-  { id: 'observatory', name: 'Empire State 86th Deck',   short: '86th Deck',   category: 'scenic', fov: 52 },
-  { id: 'bryantPark',  name: 'Bryant Park & NYPL',       short: 'Bryant Pk',   category: 'scenic', fov: 52 },
-  { id: 'waterfront',  name: 'East River & Skyline',     short: 'Skyline',     category: 'scenic', fov: 46 },
+  { id: 'queensPark',  name: 'Queen\'s Park & University Ave', short: 'Queen\'s Pk', category: 'scenic', fov: 52 },
+  { id: 'bayStreet',   name: 'Bay St & Old City Hall',   short: 'Bay St',      category: 'scenic', fov: 48 },
+  { id: 'dundasSq',    name: 'Yonge & Dundas',           short: 'Yonge-Dundas', category: 'scenic', fov: 58 },
+  { id: 'cityHall',    name: 'Nathan Phillips Square',   short: 'City Hall',   category: 'scenic', fov: 50 },
+  { id: 'lookout',     name: 'CN Tower LookOut',         short: 'LookOut',     category: 'scenic', fov: 52 },
+  { id: 'unionFront',  name: 'Front St & Union Station', short: 'Union',       category: 'scenic', fov: 52 },
+  { id: 'waterfront',  name: 'Harbour & Skyline',        short: 'Skyline',     category: 'scenic', fov: 46 },
   { id: 'drone',       name: 'Auto-Director Aerial',     short: 'Director',    category: 'scenic', fov: 50 }
 ];
 
@@ -28,7 +28,7 @@ class CameraSystem {
       56,
       window.innerWidth / window.innerHeight,
       0.35,
-      60000 // at 1:1 the boroughs & harbor run out ~20-40 km to the fogged horizon (reversed float depth keeps precision)
+      60000 // at 1:1 the city & the lake run out ~20-40 km to the fogged horizon (reversed float depth keeps precision)
     );
 
     this.activePresetId = 'chase';
@@ -255,61 +255,64 @@ class CameraSystem {
         break;
       }
 
-      case 'centralPark': {
-        // Inside Central Park South looking across The Pond, Gapstow Bridge, The Mall, Sheep Meadow & UWS/UES Skylines
+      case 'queensPark': {
+        // University Ave's median at College St, looking up the avenue to the Legislative Building at Queen's Park
+        const leg = LANDMARK_SITES['Ontario Legislative Building'] || { x: -760, z: -1380 };
         const sway = Math.sin(elapsed * 0.22) * 3.5;
-        desiredPos.set(-70.0 + sway, 14.0, -1425.0);
-        desiredLook.set(-250.0, 6.5, -1690.0);
+        desiredPos.set(-595.0 + sway, 9.0, -980.0);
+        desiredLook.set(leg.x, 18.0, leg.z);
         break;
       }
 
-      case 'fifthAve': {
-        // 5th Avenue & 42nd St looking South down the 5th Ave canyon toward the Empire State Building
+      case 'bayStreet': {
+        // Bay St at Front St looking north up the bank towers' canyon to Old City Hall's clock tower at its head
         const sway = Math.sin(elapsed * 0.25) * 1.8;
-        desiredPos.set(0.0 + sway, 6.5, -20.0);
-        desiredLook.set(-60.0, 150.0, 686.0);
+        desiredPos.set(-192.0 + sway, 6.5, 640.0);
+        desiredLook.set(-192.0, 70.0, 20.0);
         break;
       }
 
-      case 'timesSquare': {
-        // Times Square & Broadway looking across Duffy Square red steps and One Times Square billboards
+      case 'dundasSq': {
+        // The corner of Yonge & Dundas, the square's screens & the Eaton Centre
+        const sq = POINTS.dundasSquare;
         const sway = Math.sin(elapsed * 0.3) * 3.0;
-        desiredPos.set(-603.0 + sway, 5.5, -290.0);
-        desiredLook.set(-566.0, 40.0, -40.0);
+        desiredPos.set(sq.x - 40.0 + sway, 5.5, sq.z - 30.0);
+        desiredLook.set(sq.x + 30.0, 25.0, sq.z + 40.0);
         break;
       }
 
-      case 'chryslerGCT': {
-        // Park Ave & 42nd St intersection looking straight at Grand Central, MetLife, and Chrysler Building Crown
+      case 'cityHall': {
+        // Nathan Phillips Square from Queen St: the pool, the arches, the TORONTO sign & the curved towers behind
+        const ch = LANDMARK_SITES['Toronto City Hall'] || { x: -380, z: -120 };
+        const q = TELEPORT_LOCATIONS.cityhall || { x: ch.x, z: 4 };
         const sway = Math.cos(elapsed * 0.22) * 2.5;
-        desiredPos.set(300.0 + sway, 9.5, 95.0);
-        desiredLook.set(470.0, 120.0, -50.0);
+        desiredPos.set(ch.x + 10.0 + sway, 9.0, q.z - 4.0);
+        desiredLook.set(ch.x, 45.0, ch.z);
         break;
       }
 
-      case 'observatory': {
-        // Empire State Building 86th Floor Deck looking North-East across Midtown skyline
-        const pan = Math.sin(elapsed * 0.18) * 80.0;
-        desiredPos.set(-58.0, 322.0, 660.0);
-        desiredLook.set(420.0 + pan, 150.0, -200.0);
+      case 'lookout': {
+        // The CN Tower's LookOut level (346 m) looking north-east over the Financial District to the Don
+        const cn = POINTS.cnTower;
+        const pan = Math.sin(elapsed * 0.18) * 160.0;
+        desiredPos.set(cn.x + 14.0, 346.0, cn.z - 14.0);
+        desiredLook.set(200.0 + pan, 90.0, -300.0);
         break;
       }
 
-      case 'bryantPark': {
-        // Inside Bryant Park Great Lawn looking East toward NYPL portico, One Vanderbilt & Chrysler Building
+      case 'unionFront': {
+        // Front St outside Union Station looking west to the Royal York, the CN Tower beyond
         const sway = Math.sin(elapsed * 0.25) * 1.5;
-        const lawn = bryantParkLawn || { minX: -260, maxX: -150, minZ: 40, maxZ: 120, top: 1.3 };
-        const lz = (lawn.minZ + lawn.maxZ) * 0.5;
-        desiredPos.set(lawn.minX + 18.0, lawn.top + 1.7, lz + sway);
-        desiredLook.set(lawn.maxX + 260.0, 70.0, lz - 60.0);
+        desiredPos.set(-300.0, 4.5 + sway * 0.2, 650.0);
+        desiredLook.set(-900.0, 120.0, 760.0);
         break;
       }
 
       case 'waterfront': {
-        // Over the shimmering East River looking across the FDR Drive, Queensboro Bridge & Midtown Skyline
-        const drift = Math.sin(elapsed * 0.15) * 40.0;
-        desiredPos.set(1640.0, 60.0, 60.0 + drift);
-        desiredLook.set(150.0, 150.0, -150.0);
+        // Over the harbour off the Toronto Islands, looking back at the skyline & the CN Tower
+        const drift = Math.sin(elapsed * 0.15) * 60.0;
+        desiredPos.set(-350.0 + drift, 45.0, 2350.0);
+        desiredLook.set(-400.0, 150.0, 600.0);
         break;
       }
 
@@ -318,11 +321,11 @@ class CameraSystem {
         const radius = 720.0 + Math.sin(elapsed * 0.23) * 140.0;
         const alt = 330.0 + Math.cos(elapsed * 0.19) * 90.0;
         desiredPos.set(
-          Math.cos(angle) * radius + 60.0,
+          Math.cos(angle) * radius - 400.0,
           alt,
-          Math.sin(angle) * radius + 250.0
+          Math.sin(angle) * radius + 500.0
         );
-        desiredLook.set(60.0, 160.0, 250.0);
+        desiredLook.set(-400.0, 150.0, 500.0);
         break;
       }
     }
