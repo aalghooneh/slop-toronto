@@ -36,10 +36,24 @@ tools/fetch-geodata.sh                                             # refresh too
 GEO_DATA=tools/data node --max-old-space-size=8192 tools/build-geodata.mjs
 ```
 
+## The colours
+
+The brick, stone and glass colours were measured from about 430 freely licensed photos of Toronto on Wikimedia
+Commons. The photos aren't in this repo, only the colours taken from them (`tools/data/commons_palette.json`), and
+every photo used is credited in [`tools/data/commons_photos.md`](tools/data/commons_photos.md). To measure them again
+(needs Python with Pillow and numpy):
+
+```sh
+python3 -I tools/commons-palette.py
+```
+
+Adding categories to `GROUPS` in that script (say, a neighbourhood's photos) is an easy way to help.
+
 ## License and data
 
 The project code is available under the [MIT License](LICENSE).
 
 This project started as a fork of [mrdoob/slop-newyork](https://github.com/mrdoob/slop-newyork).
 
-Geographic data: © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright) (ODbL). Third-party data and dependencies retain their respective licenses.
+Geographic data: © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright) (ODbL). Facade colours
+measured from Wikimedia Commons photos, credited in [`tools/data/commons_photos.md`](tools/data/commons_photos.md). Third-party data and dependencies retain their respective licenses.

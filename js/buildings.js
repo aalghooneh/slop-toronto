@@ -308,11 +308,14 @@ function buildCityBlocks(scene) {
   }, 6, 9);
   const allBlocks = [];
 
+  // Base colours measured from freely licensed photos of Toronto on Wikimedia Commons (tools/commons-palette.py →
+  // tools/data/commons_palette.json): the masonry ones as measured, the glass ones keeping their hue & chroma at the
+  // darkness the reflections in the glass shader expect.
   const facades = [
-    // 0: Pre-War Limestone & Buff Brick (5th Ave / Madison Ave / Upper East Side style)
+    // 0: Toronto buff ("white") brick & Credit Valley sandstone: the yellow-brick Victorians, the old banks & schools
     [createPreWarBuildingMaterial, {
-      stoneColor: 0xd8cdb8,
-      trimColor: 0x9e937f,
+      stoneColor: 0xae987e,
+      trimColor: 0x7f6d57,
       windowGlassColor: 0x1a2836,
       windowWidth: 2.6,
       floorHeight: 3.7,
@@ -320,9 +323,9 @@ function buildCityBlocks(scene) {
       warmth: 0.80,
       seed: 12.4
     }],
-    // 1: Historic Warm Red/Terracotta Brick (Garment District / Chelsea / SoHo / Upper West Side)
+    // 1: Toronto red-brown brick, the commonest wall in the photos: Cabbagetown, the Annex, King West's warehouses
     [createPreWarBuildingMaterial, {
-      stoneColor: 0xa45a45,
+      stoneColor: 0x7c6154,
       trimColor: 0xcab9a0,
       windowGlassColor: 0x16222e,
       windowWidth: 2.4,
@@ -331,10 +334,10 @@ function buildCityBlocks(scene) {
       warmth: 0.86,
       seed: 27.8
     }],
-    // 2: Classic NYC Brownstone & Dark Masonry (Cross-street rowhouses, Village & Harlem)
+    // 2: Warm orange-red Victorian brick with cream trim: the bay-and-gable row houses
     [createPreWarBuildingMaterial, {
-      stoneColor: 0x765443,
-      trimColor: 0x503a2e,
+      stoneColor: 0x9c7a62,
+      trimColor: 0xcdbfa8,
       windowGlassColor: 0x151e26,
       windowWidth: 2.2,
       floorHeight: 3.4,
@@ -342,10 +345,10 @@ function buildCityBlocks(scene) {
       warmth: 0.90,
       seed: 41.2
     }],
-    // 3: Blue-Teal Curtain-Wall Glass (Park Ave / 6th Ave / Financial District modernism)
+    // 3: Blue-grey condo glass with pale concrete slab edges (CityPlace, the South Core)
     [createCurtainWallMaterial, {
-      glassTint: 0x1a3a52,
-      frameTint: 0x3b4c5b,
+      glassTint: 0x2a3744,
+      frameTint: 0x9a9ea0,
       windowWidth: 2.7,
       floorHeight: 3.9,
       litProbability: 0.60,
@@ -353,10 +356,10 @@ function buildCityBlocks(scene) {
       reflectivity: 0.92,
       seed: 63.5
     }],
-    // 4: Dark Bronze / Charcoal Miesian Glass (Avenue of the Americas / Midtown West)
+    // 4: Dark teal-grey glass, charcoal mullions (the Financial District's Miesian towers)
     [createCurtainWallMaterial, {
-      glassTint: 0x242220,
-      frameTint: 0x3c3631,
+      glassTint: 0x1e2326,
+      frameTint: 0x3a3e40,
       windowWidth: 2.5,
       floorHeight: 3.8,
       litProbability: 0.64,
@@ -364,10 +367,10 @@ function buildCityBlocks(scene) {
       reflectivity: 0.88,
       seed: 81.9
     }],
-    // 5: Silver / Ice-Blue Contemporary Supertall Glass (Billionaires' Row / Hudson Yards / WTC)
+    // 5: Grey-green newer condo glass with white spandrels & balcony edges (Yonge St, the waterfront)
     [createCurtainWallMaterial, {
-      glassTint: 0x264664,
-      frameTint: 0xb0bcc8,
+      glassTint: 0x3d4245,
+      frameTint: 0xb4b8ba,
       windowWidth: 2.9,
       floorHeight: 4.1,
       litProbability: 0.58,

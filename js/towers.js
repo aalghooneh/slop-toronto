@@ -11,16 +11,17 @@ import { createPreWarBuildingMaterial, createCurtainWallMaterial } from './tsl-m
 // The landmarks landmarks.js models in detail are left to it. The generic generator (buildings.js) keeps its lots
 // clear of these footprints.
 
-// Facade styles: [factory, options]
+// Facade styles: [factory, options]. The brick, stone, concrete & generic glass colours are measured from photos of
+// Toronto (see buildings.js); the named towers' gold, granite & marble are their own.
 const STYLES = {
-  glassBlue: [createCurtainWallMaterial, { glassTint: 0x1d3c55, frameTint: 0x3c4c5a, windowWidth: 2.8, floorHeight: 3.3, litProbability: 0.55, warmth: 0.6, reflectivity: 0.93, seed: 11.2 }],
-  glassSilver: [createCurtainWallMaterial, { glassTint: 0x34506a, frameTint: 0xaeb8c2, windowWidth: 3.0, floorHeight: 3.4, litProbability: 0.52, warmth: 0.5, reflectivity: 0.95, seed: 23.7 }],
+  glassBlue: [createCurtainWallMaterial, { glassTint: 0x2c3947, frameTint: 0x9a9ea0, windowWidth: 2.8, floorHeight: 3.3, litProbability: 0.55, warmth: 0.6, reflectivity: 0.93, seed: 11.2 }],
+  glassSilver: [createCurtainWallMaterial, { glassTint: 0x484d50, frameTint: 0xb4b8ba, windowWidth: 3.0, floorHeight: 3.4, litProbability: 0.52, warmth: 0.5, reflectivity: 0.95, seed: 23.7 }],
   glassDark: [createCurtainWallMaterial, { glassTint: 0x1b1d20, frameTint: 0x2a2b2e, windowWidth: 2.6, floorHeight: 3.9, litProbability: 0.6, warmth: 0.7, reflectivity: 0.9, seed: 37.1 }],
-  glassGreen: [createCurtainWallMaterial, { glassTint: 0x2b4a48, frameTint: 0x8f9a98, windowWidth: 2.8, floorHeight: 3.2, litProbability: 0.58, warmth: 0.62, reflectivity: 0.92, seed: 48.9 }],
+  glassGreen: [createCurtainWallMaterial, { glassTint: 0x3b454a, frameTint: 0x8f9496, windowWidth: 2.8, floorHeight: 3.2, litProbability: 0.58, warmth: 0.62, reflectivity: 0.92, seed: 48.9 }],
   glassGold: [createCurtainWallMaterial, { glassTint: 0x7a5a24, frameTint: 0xb08a3c, windowWidth: 2.6, floorHeight: 3.9, litProbability: 0.5, warmth: 0.75, reflectivity: 0.95, seed: 55.3 }],
-  concreteLight: [createPreWarBuildingMaterial, { stoneColor: 0xc9c3b6, trimColor: 0x9b958a, windowGlassColor: 0x1a2632, windowWidth: 2.4, floorHeight: 2.9, litProbability: 0.6, warmth: 0.85, seed: 61.4 }],
-  brick: [createPreWarBuildingMaterial, { stoneColor: 0x9a5a44, trimColor: 0xc8b8a0, windowGlassColor: 0x16222e, windowWidth: 2.3, floorHeight: 2.9, litProbability: 0.62, warmth: 0.88, seed: 72.6 }],
-  stone: [createPreWarBuildingMaterial, { stoneColor: 0xd6ccb8, trimColor: 0xa29682, windowGlassColor: 0x1a2836, windowWidth: 2.5, floorHeight: 3.7, litProbability: 0.54, warmth: 0.8, seed: 84.0 }],
+  concreteLight: [createPreWarBuildingMaterial, { stoneColor: 0x9ca0a2, trimColor: 0x7c8082, windowGlassColor: 0x1a2632, windowWidth: 2.4, floorHeight: 2.9, litProbability: 0.6, warmth: 0.85, seed: 61.4 }],
+  brick: [createPreWarBuildingMaterial, { stoneColor: 0x7c6154, trimColor: 0xc8b8a0, windowGlassColor: 0x16222e, windowWidth: 2.3, floorHeight: 2.9, litProbability: 0.62, warmth: 0.88, seed: 72.6 }],
+  stone: [createPreWarBuildingMaterial, { stoneColor: 0xae987e, trimColor: 0x857560, windowGlassColor: 0x1a2836, windowWidth: 2.5, floorHeight: 3.7, litProbability: 0.54, warmth: 0.8, seed: 84.0 }],
   graniteRed: [createPreWarBuildingMaterial, { stoneColor: 0x7d4038, trimColor: 0x5a2c27, windowGlassColor: 0x1c242c, windowWidth: 1.9, floorHeight: 3.8, litProbability: 0.55, warmth: 0.7, seed: 91.8 }],
   marbleWhite: [createPreWarBuildingMaterial, { stoneColor: 0xe6e3dc, trimColor: 0xc4c0b8, windowGlassColor: 0x1d262e, windowWidth: 1.6, floorHeight: 3.8, litProbability: 0.55, warmth: 0.65, seed: 97.5 }]
 };

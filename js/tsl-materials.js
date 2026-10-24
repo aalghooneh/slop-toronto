@@ -798,8 +798,8 @@ function createPreWarBuildingMaterial(opts = {}) {
     // Rear, court & lot-line walls are plain common brick (red-brown or buff by building); lot-line walls weather in
     // patches of grey parging (worked out on those walls only), some are parged all over
     const backBrick = mix(
-      mix(color(0x6c3d30), color(0x8a503e), fract(tone.mul(7.31))),
-      mix(color(0x9a8669), color(0xb09a7a), fract(tone.mul(5.17))),
+      mix(color(0x5a463f), color(0x7c6154), fract(tone.mul(7.31))), // (measured from photos of Toronto, see buildings.js)
+      mix(color(0x9c8670), color(0xae987e), fract(tone.mul(5.17))),
       step(0.58, tone)
     );
     const parged = float(0.0).toVar();
