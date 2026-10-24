@@ -98,10 +98,10 @@ class TouchControls {
     this.reset();
     if (!this.root) return;
     this.mode = mode;
-    const labels = { boost: mode === 'person' || mode === 'cyclist' ? 'Sprint' : 'Boost', up: mode === 'helicopter' ? 'Ascend' : 'Jump', down: 'Descend' };
+    const labels = { boost: mode === 'person' || mode === 'cyclist' ? 'Sprint' : 'Boost', up: mode === 'helicopter' ? 'Ascend' : mode === 'car' ? 'Handbrake' : 'Jump', down: 'Descend' };
     for (const button of this.buttons) {
       const action = button.getAttribute('data-touch-action');
-      button.hidden = (action === 'up' && mode !== 'person' && mode !== 'helicopter') || (action === 'down' && mode !== 'helicopter');
+      button.hidden = (action === 'up' && mode === 'cyclist') || (action === 'down' && mode !== 'helicopter');
       button.setAttribute('aria-label', labels[action]);
       const label = this.root.querySelector(`[data-touch-label="${action}"]`);
       if (label) label.textContent = labels[action];

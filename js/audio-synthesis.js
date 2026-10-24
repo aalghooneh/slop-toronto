@@ -373,6 +373,17 @@ export function createMotorVoice(context, resources, kind, output) {
     const roadLowpass = filter('lowpass', 3200, 0.5);
     const roadGain = gain();
     road.connect(roadHighpass).connect(roadLowpass).connect(roadGain).connect(mix);
+    // Tyre squeal while the car slides: noise rung through two narrow resonances that waver with the scrub
+    const squeal = loop();
+    const squealBand = filter('bandpass', 1150, 9);
+    const squealHarmonic = filter('bandpass', 2350, 11);
+    const squealGain = gain();
+    squeal.connect(squealBand).connect(squealGain);
+    squeal.connect(squealHarmonic).connect(squealGain);
+    squealGain.connect(mix);
+    const squealLevel = smoothParameter(squealGain.gain, 0.05);
+    const squealPitch = smoothParameter(squealBand.frequency, 0.08, 1);
+    const squealHarmonicPitch = smoothParameter(squealHarmonic.frequency, 0.08, 1);
     const exhaustRate = smoothParameter(exhaust.playbackRate, 0.035, 0.0005, true);
     const highExhaustRate = smoothParameter(highExhaust.playbackRate, 0.035, 0.0005 * bankRatio, true);
     const lowBankLevel = smoothParameter(lowBankGain.gain, 0.07, 0.0001, true);
@@ -385,7 +396,7 @@ export function createMotorVoice(context, resources, kind, output) {
     const roadLevel = smoothParameter(roadGain.gain, 0.18);
     const roadFrequency = smoothParameter(roadLowpass.frequency, 0.18, 1);
     const noiseRate = smoothParameter(road.playbackRate, 0.12, 0.001);
-    render = (speed, load, doppler, now) => {
+    render = (speed, load, doppler, now, verticalSpeed, skid) => {
       const first = previousTime < 0;
       const dt = first ? 0.1 : clamp(now - previousTime, 0, 0.5);
       previousTime = now;
@@ -434,6 +445,11 @@ export function createMotorVoice(context, resources, kind, output) {
       roadLevel(Math.pow(rolling, 1.25) * (bus ? 0.44 : 0.36) * (1 - throttle * 0.5), now);
       roadFrequency((2200 + Math.min(1, rolling) * 2400) * doppler, now);
       noiseRate(doppler * (0.96 + variation * 0.08), now);
+      const scrub = skid > 0.08 ? Math.min(1, (skid - 0.08) * 1.6) : 0;
+      const waver = Math.sin(now * 23) * 40 + Math.sin(now * 7.3) * 25;
+      squealLevel(scrub * 1.6, now);
+      squealPitch((1050 + scrub * 260 + waver) * doppler, now);
+      squealHarmonicPitch((2200 + scrub * 480 + waver * 2) * doppler, now);
     };
   } else if (kind === 'helicopter') {
     const rotor = loop(resources.rotor);
@@ -554,7 +570,7 @@ export function createMotorVoice(context, resources, kind, output) {
     };
   }
 
-  function update({ speed = 0, load = 0, doppler = 1, seed = 0, verticalSpeed = 0 } = {}, now = context.currentTime) {
+  function update({ speed = 0, load = 0, doppler = 1, seed = 0, verticalSpeed = 0, skid = 0 } = {}, now = context.currentTime) {
     if (disposed) return;
     const safeSeed = Number.isFinite(seed) ? seed : 0;
     if (safeSeed !== lastSeed) {
@@ -568,7 +584,8 @@ export function createMotorVoice(context, resources, kind, output) {
       Number.isFinite(load) ? clamp(load, 0, 1) : 0,
       Number.isFinite(doppler) ? clamp(doppler, 0.5, 2) : 1,
       time,
-      Number.isFinite(verticalSpeed) ? clamp(verticalSpeed, -30, 30) : 0
+      Number.isFinite(verticalSpeed) ? clamp(verticalSpeed, -30, 30) : 0,
+      Number.isFinite(skid) ? clamp(skid, 0, 1) : 0
     );
   }
 

@@ -34,7 +34,7 @@ const groundCollider = { type: 'ground' };
 
 const CAR_DRIVE = {
   speed: 23.5, boostSpeed: 36, reverseSpeed: 10.5, acceleration: 14, boostAcceleration: 21,
-  rolling: 0.12, drag: 0.0004, brake: 9
+  rolling: 0.12, drag: 0.0004, brake: 9, handbrake: 7
 };
 const BICYCLE_DRIVE = {
   speed: 12.8, boostSpeed: 19, reverseSpeed: 4.5, acceleration: 9, boostAcceleration: 13.5,
@@ -247,7 +247,7 @@ class ThirdPersonControllerManager {
       ent.crowd.add(ent.rig, 0);
       ent.crowd.end();
     } else if (this.activeMode === 'car') {
-      ent.vx = ent.vz = ent.angularVel = ent.steerAngle = 0;
+      ent.vx = ent.vz = ent.angularVel = ent.steerAngle = ent.skid = 0;
       ent.pitchVel = ent.rollVel = ent.heaveY = ent.heaveVel = 0;
       ent.chassisPivot.rotation.x = ent.chassisPivot.rotation.z = 0;
       ent.chassisPivot.position.y = 0;
@@ -459,6 +459,7 @@ class ThirdPersonControllerManager {
       heading: 0,
       speed: 0,
       vx: 0,
+      skid: 0,
       vz: 0,
       angularVel: 0,
       pitchVel: 0,
@@ -1069,34 +1070,54 @@ class ThirdPersonControllerManager {
     if (this.keys.left) steerInput = this.keys.left;
     if (this.keys.right) steerInput = -this.keys.right;
 
-    c.steerAngle += (steerInput * 0.52 - c.steerAngle) * Math.min(1, dt * 10);
+    c.steerAngle += (steerInput * 0.52 - c.steerAngle) * Math.min(1, dt * 14);
 
-    if (Math.abs(c.speed) > 0.2) {
-      const dirSign = c.speed >= 0 ? 1 : -1;
-      const speedFactor = Math.min(1.0, Math.abs(c.speed) / 8.0);
-      c.heading += c.steerAngle * 2.4 * speedFactor * dirSign * dt;
+    // Arcade handling in the spirit of the 90s car-chase games: the nose turns in sharply and the car's momentum
+    // follows it only as far as the tyres can pull it round, so at speed the tail steps out and the car slides; the
+    // handbrake (Space) locks the rear for power slides and handbrake turns. The car moves with its momentum (forward
+    // speed along the nose + the slide across it in vx/vz), which is split again along the new heading every frame
+    const handbrake = !!this.keys.up && Math.hypot(c.speed, c.vx, c.vz) > 2;
+    if (handbrake) c.speed = Math.sign(c.speed) * Math.max(0, Math.abs(c.speed) - CAR_DRIVE.handbrake * dt);
+    const momentumX = Math.sin(c.heading) * c.speed + c.vx;
+    const momentumZ = Math.cos(c.heading) * c.speed + c.vz;
+    const moving = Math.hypot(momentumX, momentumZ);
+    if (moving > 0.2) {
+      // (it turns with its momentum, so a handbrake turn keeps swinging round while the car slides sideways)
+      const dirSign = c.speed < -0.5 && !handbrake ? -1 : 1;
+      const speedFactor = Math.min(1.0, moving / 5.0);
+      c.heading += c.steerAngle * (handbrake ? 4.6 : 2.9) * speedFactor * dirSign * dt;
     }
-
-    // Integrate collision yaw spin & lateral tire slip velocity with asphalt grip damping
-    const tireGripDamp = Math.exp(-dt * 6.8);
-    c.heading += c.angularVel * dt;
+    c.heading += c.angularVel * dt; // collision spin
     c.angularVel *= Math.exp(-dt * 7.8);
+    const sinH = Math.sin(c.heading);
+    const cosH = Math.cos(c.heading);
+    c.speed = momentumX * sinH + momentumZ * cosH;
+    let lateral = momentumX * cosH - momentumZ * sinH; // the slide across the car (m/s), + to its left
+    // the tyres' sideways grip: firm at low speed, giving way at speed with the wheel turned hard, weaker still once
+    // sliding (and next to none with the rear locked)
+    const fast = Math.min(1, Math.max(0, (Math.abs(c.speed) - 9) / 22));
+    let grip = handbrake ? 0.9 : 14 - fast * Math.abs(c.steerAngle / 0.52) * 11;
+    if (Math.abs(lateral) > 4 && !handbrake) grip *= 0.55;
+    lateral *= Math.exp(-dt * grip);
+    c.speed *= Math.exp(-dt * Math.abs(lateral) * 0.035); // sliding scrubs off speed
+    c.vx = cosH * lateral;
+    c.vz = -sinH * lateral;
+    c.skid = Math.min(1, Math.abs(lateral) / 6);
 
     const prevX = c.position.x;
     const prevZ = c.position.z;
     c.position.x += (Math.sin(c.heading) * c.speed + c.vx) * dt;
     c.position.z += (Math.cos(c.heading) * c.speed + c.vz) * dt;
-    c.vx *= tireGripDamp;
-    c.vz *= tireGripDamp;
 
     this.resolveHorizontalCollision(c.position, 1.35, c.position.y + 1.0, c);
     c.position.y = this.getGroundHeight(c.position.x, c.position.z, 'car', c.position.y);
 
     // 3-DOF Spring-Damper Chassis Suspension (Pitch, Roll & Vertical Heave)
-    const targetPitch = -Math.max(-1, Math.min(1, acceleration / CAR_DRIVE.acceleration)) * 0.026;
-    const targetRoll = -c.steerAngle * (c.speed / maxSpeed) * 0.092;
-    const springK = 68.0;
-    const dampC = 11.2;
+    // (soft and floaty: the body dives under braking, squats under power and leans hard into the corners & slides)
+    const targetPitch = -Math.max(-1, Math.min(1, acceleration / CAR_DRIVE.acceleration)) * 0.065;
+    const targetRoll = -c.steerAngle * (c.speed / maxSpeed) * 0.15 + Math.max(-1, Math.min(1, lateral / 10)) * 0.09;
+    const springK = 42.0;
+    const dampC = 6.2;
     c.pitchVel += ((targetPitch - c.chassisPivot.rotation.x) * springK - c.pitchVel * dampC) * dt;
     c.rollVel += ((targetRoll - c.chassisPivot.rotation.z) * springK - c.rollVel * dampC) * dt;
     c.chassisPivot.rotation.x = Math.max(-0.22, Math.min(0.22, c.chassisPivot.rotation.x + c.pitchVel * dt));

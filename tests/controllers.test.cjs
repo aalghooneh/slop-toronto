@@ -185,7 +185,9 @@ for (const mode of ['Person', 'Car', 'Cyclist', 'Helicopter']) {
     for (const reverse of [false, true]) {
       const full = advanceWithTouch(mode, 1, reverse);
       const partial = advanceWithTouch(mode, 0.4, reverse);
-      assert.ok(Math.abs(partial.speed - full.speed * 0.4) < 1e-10, 'movement should scale with joystick strength');
+      // (the car's momentum is split again along its new heading, so turning further costs it a hair of speed)
+      const tolerance = mode === 'Car' ? 1e-3 : 1e-10;
+      assert.ok(Math.abs(partial.speed - full.speed * 0.4) < tolerance, 'movement should scale with joystick strength');
       const turn = mode === 'Car' ? 'steerAngle' : 'heading';
       assert.ok(Math.abs(partial[turn] - full[turn] * 0.4) < 1e-10, 'turning should scale with joystick strength');
       if (mode === 'Helicopter') {
