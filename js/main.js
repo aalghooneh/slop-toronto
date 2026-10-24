@@ -11,6 +11,7 @@ import { buildCityBlocks } from './buildings.js';
 import { buildTowers } from './towers.js';
 import { buildStreetDetails } from './street-details.js';
 import { createTrafficSystem, createHighwayTraffic } from './traffic.js';
+import { createStreetcars } from './streetcars.js';
 import { buildRoadPaint } from './road-paint.js';
 import { ThirdPersonControllerManager } from './controllers.js';
 import { TouchControls } from './touch-controls.js';
@@ -98,6 +99,7 @@ async function initApp() {
   ]);
   markInit('traffic');
   const highwayTraffic = createHighwayTraffic(scene, cityGrid.highwayLanes);
+  const streetcars = createStreetcars(scene, trafficSystem);
   buildRoadPaint(scene, trafficSystem.network);
   markInit('roadPaint');
 
@@ -668,6 +670,7 @@ async function initApp() {
       cameraSystem.camera
     );
     highwayTraffic.update(dt, cameraSystem.camera, controllerManager.getActiveEntity(), controllerManager.activeMode);
+    streetcars.update(dt, elapsed, cameraSystem.camera, controllerManager.getActiveEntity(), controllerManager.activeMode);
     if (!document.hidden && now >= nextPlayerSave) {
       savePlayerState();
       nextPlayerSave = now + 5000;

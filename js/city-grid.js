@@ -414,6 +414,15 @@ function buildCityGrid(scene) {
   const hedgeGeos = [];
   const SW_TOP = 0.22;
   const isPark = (b) => b.park > 0.6 && !b.median;
+  // The medians the streetcars run along (Spadina Ave's & Queens Quay's rights-of-way): paved, no hedge
+  const tramMedians = new Set();
+  for (const r of RAILS) {
+    if (r.kind !== 'tram') continue;
+    for (const p of r.pts) {
+      const b = blockAt(p.x, p.z);
+      if (b && b.median) tramMedians.add(b);
+    }
+  }
   const isRail = (b) => b.rail > 0.5 && !isPark(b) && !b.median;
   for (const b of BLOCKS) {
     if (isPark(b) || isRail(b)) continue;
@@ -436,7 +445,7 @@ function buildCityGrid(scene) {
       if (b.median) addFootprint((b.minX + b.maxX) * 0.5, (b.minZ + b.maxZ) * 0.5, b.maxX - b.minX, b.maxZ - b.minZ);
     }
     // Planted medians (University Ave's, Spadina Ave's...): a clipped hedge on the slab
-    if (b.median && Math.min(b.maxX - b.minX, b.maxZ - b.minZ) > 2.2) {
+    if (b.median && !tramMedians.has(b) && Math.min(b.maxX - b.minX, b.maxZ - b.minZ) > 2.2) {
       const hedge = offsetPolygonInward(b.poly, 1.0);
       if (hedge) hedgeGeos.push(createExtrudedPolygonMesh(hedge, SW_TOP, 0.55, medianHedgeMat).geometry);
     }

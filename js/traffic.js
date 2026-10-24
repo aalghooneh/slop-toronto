@@ -421,7 +421,10 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
   const phaseOf = (e) => (e.axisIndex === 0 ? avePhase : stPhase);
   let focusX = 0;
   let focusZ = 140;
-  const player = { active: false, entity: null, x: 0, z: 0, vx: 0, vz: 0, halfW: 0.86, halfL: 2.18, push: 0.5 };
+  const player = { active: false, entity: null, x: 0, z: 0, vx: 0, vz: 0, halfW: 0.94, halfL: 2.32, push: 0.5 };
+  // Other moving things the traffic keeps behind (the streetcars' modules, streetcars.js): { x, z, yaw, halfW, halfL, speed }
+  let movers = [];
+  const setObstacles = (list) => { movers = list || []; };
 
   // Lane lists hold pooled { v, s } entries sorted by position s along the lane, rebuilt every frame
   const pool = [];
@@ -590,6 +593,36 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
     v.pAhead = dx * fx + dz * fz;
     v.pRight = dz * fx - dx * fz;
     v.pSpeed = Math.max(0, player.vx * fx + player.vz * fz);
+  }
+
+  // Gap to the nearest obstacle (a streetcar module) ahead of v in its lane, and how fast it moves v's way
+  function obstacleGap(v) {
+    let best = Infinity;
+    let speed = 0;
+    if (!movers.length) return { gap: best, speed };
+    const fx = Math.sin(v.yaw);
+    const fz = Math.cos(v.yaw);
+    for (const o of movers) {
+      const dx = o.x - v.x;
+      const dz = o.z - v.z;
+      if (Math.abs(dx) > LOOKAHEAD + 20 || Math.abs(dz) > LOOKAHEAD + 20) continue;
+      const ahead = dx * fx + dz * fz;
+      if (ahead < 0 || ahead > LOOKAHEAD + 20) continue;
+      // the module's extent along & across v's heading
+      const ox = Math.sin(o.yaw);
+      const oz = Math.cos(o.yaw);
+      const along = Math.abs(ox * fx + oz * fz);
+      const across = Math.abs(ox * fz - oz * fx);
+      const reachAlong = o.halfL * along + o.halfW * across;
+      const reachAcross = o.halfL * across + o.halfW * along;
+      if (Math.abs(dz * fx - dx * fz) > v.halfWidth + reachAcross + 0.3) continue;
+      const gap = ahead - v.half - reachAlong;
+      if (gap < best) {
+        best = gap;
+        speed = Math.max(0, o.speed * (ox * fx + oz * fz));
+      }
+    }
+    return { gap: best, speed };
   }
 
   // Gap to the player if it is ahead in the lane whose centre is `off` metres to the right of v
@@ -1018,6 +1051,14 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
       if (pg < v.gap) {
         v.gap = pg;
         v.leaderSpeed = v.pSpeed;
+      }
+    }
+    const og = obstacleGap(v);
+    if (og.gap < LOOKAHEAD) {
+      worst = Math.min(worst, brake(v, Math.max(0.1, og.gap), og.speed));
+      if (og.gap < v.gap) {
+        v.gap = og.gap;
+        v.leaderSpeed = og.speed;
       }
     }
     const acc = Math.min(freeAcc(v) + worst, (cap - v.speed) * 2);
@@ -1979,8 +2020,8 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
       player.vx = Math.sin(heading) * speed + (playerEntity.vx || 0);
       player.vz = Math.cos(heading) * speed + (playerEntity.vz || 0);
     }
-    player.halfW = activeMode === 'cyclist' ? 0.35 : activeMode === 'person' ? 0.32 : 0.86;
-    player.halfL = activeMode === 'cyclist' ? 0.85 : activeMode === 'person' ? 0.32 : 2.18;
+    player.halfW = activeMode === 'cyclist' ? 0.35 : activeMode === 'person' ? 0.32 : 0.94;
+    player.halfL = activeMode === 'cyclist' ? 0.85 : activeMode === 'person' ? 0.32 : 2.32;
     player.push = activeMode === 'cyclist' ? 0.82 : activeMode === 'person' ? 0.88 : 0.50;
 
     // 1. Cars & buses
@@ -2100,6 +2141,7 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
     group,
     update,
     setCollisionListener,
+    setObstacles,
     cars,
     buses,
     peds,
