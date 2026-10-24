@@ -218,12 +218,23 @@ test('crashes wear the car down until it wrecks, then it restarts as new where t
   const teleports = [];
   controller.teleportActiveTo = (x, z, heading) => teleports.push([x, z, heading]);
 
-  controller.damageCar(2);
+  controller.clock = 0;
+  controller.damageCar(3.5);
   assert.equal(car.health, 100, 'a parking bump is free');
   controller.damageCar(50 / 3.6);
-  assert.ok(car.health > 55 && car.health < 75, `a 50 km/h crash costs about a third (left ${car.health})`);
+  assert.ok(car.health > 85 && car.health < 93, `a 50 km/h crash costs about a tenth (left ${car.health})`);
+  const afterCrash = car.health;
+  controller.damageCar(50 / 3.6);
+  controller.damageCar(40 / 3.6);
+  assert.equal(car.health, afterCrash, 'the frames of one crash count once');
+  controller.clock = 1;
   controller.damageCar(100 / 3.6);
-  assert.equal(car.health, 0);
+  assert.ok(car.health > 40 && car.health < 55, `a 100 km/h crash costs about 40 more (left ${car.health})`);
+  for (let k = 2; car.health > 0; k++) {
+    controller.clock = k;
+    controller.damageCar(100 / 3.6);
+    assert.ok(k < 5, 'a few big crashes wreck it');
+  }
   assert.ok(car.wrecked > 0, 'it is wrecked');
 
   controller.setTouchInput('forward', 1);

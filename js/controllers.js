@@ -47,8 +47,10 @@ const ENVISION = {
 const RPM_PER_MS = 60 / (2 * Math.PI * ENVISION.wheelRadius); // wheel rpm per m/s
 
 // Crash damage: an impact at `speed` m/s (closing speed along the contact normal) takes this much of the car's 100
-// health. Bumps under ~9 km/h are free; a 50 km/h wall costs about a third, ~100 km/h wrecks it outright
-const CRASH = { threshold: 2.5, scale: 0.8, exponent: 1.5, wreckTime: 3.5 };
+// health. Bumps & scrapes under ~15 km/h are free; a 50 km/h wall costs about a tenth, a 100 km/h one about 40, so it
+// takes a few big crashes (or many small ones) to wreck it. The frames of one crash (it grinds along a wall, or bounces
+// off it into it again) count once: within `window` s only what a harder impact adds over the first is taken
+const CRASH = { threshold: 4, scale: 0.35, exponent: 1.5, window: 0.6, wreckTime: 3.5 };
 function crashDamage(speed) {
   return speed > CRASH.threshold ? CRASH.scale * (speed - CRASH.threshold) ** CRASH.exponent : 0;
 }
@@ -1056,6 +1058,7 @@ class ThirdPersonControllerManager {
   }
 
   update(dt, elapsed) {
+    this.clock = (this.clock || 0) + dt;
     const heli = this.entities.helicopter;
     heli.mainRotorPivot.rotation.y += dt * 24.0;
     heli.tailRotorPivot.rotation.x += dt * 32.0;
@@ -1140,7 +1143,16 @@ class ThirdPersonControllerManager {
   damageCar(speed) {
     const c = this.entities.car;
     if (c.wrecked > 0 || !Number.isFinite(speed)) return;
-    c.health = Math.max(0, c.health - crashDamage(speed));
+    const now = this.clock || 0;
+    let damage = crashDamage(speed);
+    if (c.lastCrash && now - c.lastCrash.time < CRASH.window) {
+      damage -= crashDamage(c.lastCrash.speed);
+      if (damage <= 0) return;
+      c.lastCrash.speed = speed;
+    } else {
+      c.lastCrash = { time: now, speed };
+    }
+    c.health = Math.max(0, c.health - damage);
     if (c.health === 0) c.wrecked = CRASH.wreckTime;
   }
 
@@ -1149,6 +1161,7 @@ class ThirdPersonControllerManager {
     const c = this.entities.car;
     c.health = 100;
     c.wrecked = 0;
+    c.lastCrash = null;
     if (this.activeMode === 'car') this.teleportActiveTo(c.home.x, c.home.z, c.home.heading);
     else {
       c.position.set(c.home.x, 0, c.home.z);

@@ -19,7 +19,7 @@ import {
   createBusWheelMaterial,
   createLoftedBusMaterial
 } from './actor-models.js';
-import { PersonCrowd, PersonRig } from './pedestrians.js';
+import { PersonCrowd, PersonRig, PersonRagdoll } from './pedestrians.js';
 
 // js/traffic.js
 // Downtown Toronto's traffic and pedestrians on the road graph road-network.js derives from the city as built:
@@ -1941,7 +1941,7 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
   const SIDEWALK_Y = 0.22;
   const CROSSWALK_Y = 0.012;
   function pedGround(p, x, z) {
-    if (p.knock) return blockAt(x, z) ? SIDEWALK_Y : 0; // thrown off its track: the sidewalk or the road
+    if (p.knock) return groundAt(x, z); // thrown off its track: the sidewalk or the road
     if (!p.node) return SIDEWALK_Y;
     const t = (x - p.ax) * p.ux + (z - p.az) * p.uz;
     return t > 2 && t < p.len - 2 ? CROSSWALK_Y : SIDEWALK_Y;
@@ -1959,12 +1959,40 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
   }
 
   // ---------------------------------------------------------------------------------------------------------------
-  // Knocked down by the player: a pedestrian the car (or bicycle) runs into is thrown with the vehicle's momentum,
-  // tumbles, lands and slides, lies in the road a few seconds, gets up and walks back to where it was going. Below
-  // ~10 km/h it only stumbles out of the way. The vehicle loses the momentum it hands over.
+  // Knocked down by the player: a pedestrian the car (or bicycle) runs into goes limp as a ragdoll (pedestrians.js):
+  // the bumper sweeps the legs from under them, the body folds onto the bonnet, rolls up the windscreen or off to the
+  // side and comes down in the road, where it slides to a stop. They lie there a few seconds, get up and walk back to
+  // where they were going. Below ~10 km/h they only stumble out of the way. The vehicle loses the momentum it hands over.
   // ---------------------------------------------------------------------------------------------------------------
   const PED_MASS = 75;
-  const COM_Y = 0.9; // centre of mass over the feet, standing
+  const groundAt = (x, z) => (blockAt(x, z) ? SIDEWALK_Y : 0);
+  // The player's car as a solid for the ragdoll: its body's top along its length (bumper & bonnet, the windscreen's
+  // slope, the roof, the tailgate), particles inside pushed out the shortest way
+  function carBodyTop(along) {
+    if (along > 1.15) return 0.98;
+    if (along > 0.35) return 0.98 + ((1.15 - along) / 0.8) * 0.64;
+    return along > -1.7 ? 1.62 : 1.15;
+  }
+  function pushOffCar(pt) {
+    const pe = player.entity;
+    if (!pe || pe.type !== 'car') return false;
+    const sn = Math.sin(pe.heading || 0), cs = Math.cos(pe.heading || 0);
+    const dx = pt.x - pe.position.x, dz = pt.z - pe.position.z;
+    let across = dx * cs - dz * sn;
+    let along = dx * sn + dz * cs;
+    const hw = player.halfW, hl = player.halfL;
+    if (Math.abs(across) > hw || Math.abs(along) > hl) return false;
+    const top = pe.position.y + carBodyTop(along);
+    if (pt.y > top) return false;
+    const up = top - pt.y, side = hw - Math.abs(across), end = hl - Math.abs(along);
+    if (up <= side && up <= end) pt.y = top;
+    else if (side <= end) across = Math.sign(across || 1) * hw;
+    else along = Math.sign(along || 1) * hl;
+    pt.x = pe.position.x + cs * across + sn * along;
+    pt.z = pe.position.z - sn * across + cs * along;
+    return true;
+  }
+
   function knockDown(p) {
     if (!player.active || p.knock) return;
     const pe = player.entity;
@@ -1979,29 +2007,29 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
     if (Math.abs(across) > player.halfW + r || Math.abs(along) > player.halfL + r) return;
     const vx = player.vx, vz = player.vz;
     const speed = Math.hypot(vx, vz);
-    // pushed clear of the vehicle's body, out of its shallower side
+    // which way is out of the vehicle's body (its shallower side)
     const outA = player.halfW + r - Math.abs(across), outL = player.halfL + r - Math.abs(along);
     let nx, nz;
     if (outA < outL) { const s = Math.sign(across) || 1; nx = cs * s; nz = -sn * s; }
     else { const s = Math.sign(along) || 1; nx = sn * s; nz = cs * s; }
-    p.x += nx * Math.min(outA, outL);
-    p.z += nz * Math.min(outA, outL);
     const bike = pe.type === 'cyclist';
     const fall = speed > (bike ? 4.5 : 2.8);
-    const ground = blockAt(p.x, p.z) ? SIDEWALK_Y : 0;
-    // thrown along with the vehicle (a little off to the side it was struck from), lofted the faster it hit
-    const kvx = vx * (fall ? 0.8 : 0.6) + nx * (fall ? 1.2 : 1.6);
-    const kvz = vz * (fall ? 0.8 : 0.6) + nz * (fall ? 1.2 : 1.6);
-    const kv = Math.hypot(kvx, kvz) || 1;
-    p.knock = {
-      phase: fall ? 'air' : 'stumble', time: 0,
-      x: p.x, y: ground + COM_Y, z: p.z, vx: kvx, vz: kvz,
-      vy: fall ? Math.min(6.5, 0.8 + speed * 0.2) * (bike ? 0.5 : 1) : 0,
-      ax: kvz / kv, az: -kvx / kv, // tipping axis: falls over towards where it is thrown
-      angle: 0, spin: fall ? Math.min(9, 2.5 + speed * 0.35) : 0, lie: 0, yaw: p.rig.yaw
-    };
     p.v = 0;
     p.waiting = false;
+    if (fall) {
+      p.rig.solve(); // (its pose, even if it was out of sight)
+      p.rag ??= new PersonRagdoll();
+      // the legs go with the bumper, the upper body is left behind and folds over it
+      const legs = bike ? 0.7 : 1.0, body = bike ? 0.45 : 0.3;
+      p.rag.start(p.rig, vx * body + nx * 0.8, 0.6 + speed * (bike ? 0.04 : 0.09), vz * body + nz * 0.8,
+        vx * legs + nx * 0.4, vz * legs + nz * 0.4);
+      p.knock = { phase: 'rag', time: 0, still: 0, yaw: p.rig.yaw, x: p.x, z: p.z, car: !bike };
+    } else {
+      // a stumble: shoved clear, staggering a couple of steps
+      p.x += nx * Math.min(outA, outL);
+      p.z += nz * Math.min(outA, outL);
+      p.knock = { phase: 'stumble', time: 0, x: p.x, z: p.z, vx: vx * 0.6 + nx * 1.6, vz: vz * 0.6 + nz * 1.6, yaw: p.rig.yaw };
+    }
     // the vehicle hands over the momentum it gives the pedestrian
     const mass = bike ? 90 : 1800;
     if (typeof pe.speed === 'number') pe.speed *= 1 - Math.min(0.5, PED_MASS / (mass + PED_MASS));
@@ -2013,44 +2041,33 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
   function updateKnock(p, dt) {
     const k = p.knock;
     k.time += dt;
-    const ground = blockAt(k.x, k.z) ? SIDEWALK_Y : 0;
-    const restY = (a) => ground + COM_Y * Math.abs(Math.cos(a)) + 0.14 * Math.abs(Math.sin(a)); // its height lying at `a`
-    if (k.phase === 'air') {
-      k.vy -= 9.81 * dt;
-      k.x += k.vx * dt;
-      k.y += k.vy * dt;
-      k.z += k.vz * dt;
-      k.angle += k.spin * dt;
-      if (k.y <= restY(k.angle) && k.vy < 0) {
-        k.y = restY(k.angle);
-        // lands: a bounce off a hard landing, then down for good, on its back or front (whichever is nearer)
-        if (k.vy < -3.5) { k.vy *= -0.25; k.spin *= 0.4; }
-        else { k.phase = 'slide'; k.vy = 0; k.lie = Math.round((k.angle - Math.PI / 2) / Math.PI) * Math.PI + Math.PI / 2; }
+    if (k.phase === 'rag') {
+      // the car's body only matters while it is still about (it may drive off, or stop with the person on it)
+      p.rag.step(dt, groundAt, k.car && k.time < 3 ? pushOffCar : null);
+      k.x = p.rag.x;
+      k.z = p.rag.z;
+      k.still = p.rag.speed < 0.35 ? k.still + dt : 0;
+      if (k.still > 0.8 || k.time > 10) { k.phase = 'down'; k.time = 0; }
+    } else if (k.phase === 'down') {
+      if (k.time > 2.5 + (p.speed % 0.1) * 15) {
+        // gets up facing the way its head lay
+        k.phase = 'up';
+        k.time = 0;
+        p.rag.apply(p.rig);
+        k.saved = Float32Array.from(p.rig.pose);
+        const P = p.rag.pos;
+        k.yaw = Math.atan2(P[9] - P[0], P[11] - P[2]); // pelvis -> crown
       }
-    } else if (k.phase === 'slide' || k.phase === 'stumble') {
+    } else if (k.phase === 'up') {
+      if (k.time > 1.3) { k.phase = 'return'; k.time = 0; }
+    } else if (k.phase === 'stumble') {
       const v = Math.hypot(k.vx, k.vz);
-      const slow = Math.max(0, v - (k.phase === 'slide' ? 8 : 7.5) * dt);
+      const slow = Math.max(0, v - 7.5 * dt);
       k.vx = v ? (k.vx * slow) / v : 0;
       k.vz = v ? (k.vz * slow) / v : 0;
       k.x += k.vx * dt;
       k.z += k.vz * dt;
-      if (k.phase === 'slide') {
-        k.angle += (k.lie - k.angle) * (1 - Math.exp(-dt * 10));
-        k.y = restY(k.angle);
-        if (!slow) { k.phase = 'down'; k.time = 0; }
-      } else {
-        // a stumble: rocks over and back as it staggers
-        k.angle = Math.sin(Math.min(1, k.time / 0.7) * Math.PI) * 0.35;
-        k.y = ground + COM_Y;
-        if (k.time > 0.7 && !slow) { k.phase = 'return'; k.time = 0; }
-      }
-    } else if (k.phase === 'down') {
-      if (k.time > 2.5 + (p.speed % 0.1) * 15) { k.phase = 'up'; k.time = 0; k.from = Math.atan2(Math.sin(k.angle), Math.cos(k.angle)); }
-    } else if (k.phase === 'up') {
-      const t = Math.min(1, k.time / 1.1);
-      k.angle = k.from * (1 - t * t * (3 - 2 * t));
-      k.y = restY(k.angle);
-      if (t === 1) { k.phase = 'return'; k.time = 0; }
+      if (k.time > 0.7 && !slow) { k.phase = 'return'; k.time = 0; }
     }
     if (k.phase === 'return') {
       // walks back to its place on its way
@@ -2080,12 +2097,16 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
   function renderKnocked(p, dt) {
     const k = p.knock;
     const draw = !hasView || visible(p.x, p.z, 7);
-    if (k.phase === 'return') p.rig.update(dt, p.x, p.z, k.yaw, pedGround, p, 0, draw);
-    else p.rig.reset(p.x, p.z, k.yaw, pedGround, p);
-    if (!draw) return;
-    const ground = pedGround(p, p.x, p.z);
-    if (k.angle) p.rig.tumble(k.angle, k.ax, k.az, p.x, ground + COM_Y, p.z, k.y - ground - COM_Y);
-    pedCrowd.add(p.rig, Math.hypot(p.x - focusX, p.z - focusZ));
+    if (k.phase === 'rag' || k.phase === 'down') {
+      if (draw) p.rag.apply(p.rig);
+    } else if (k.phase === 'up') {
+      p.rig.reset(p.x, p.z, k.yaw, pedGround, p);
+      const t = Math.min(1, k.time / 1.3);
+      p.rig.blendFrom(k.saved, 1 - t * t * (3 - 2 * t));
+    } else {
+      p.rig.update(dt, p.x, p.z, k.yaw, pedGround, p, 0, draw);
+    }
+    if (draw) pedCrowd.add(p.rig, Math.hypot(p.x - focusX, p.z - focusZ));
   }
 
   function updateSparks(dt) {
