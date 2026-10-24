@@ -168,7 +168,7 @@ function clampToSegment(seg, x, z, margin) {
     const L = Math.max(1, cum[cum.length - 1]);
     a.links.push({ n: b, L });
     b.links.push({ n: a, L });
-    return { w, a, b, cum, L };
+    return { w, a, b };
   });
   // the ends: on a motorway (a node of its centre line), its deck; a dead end, the street; the rest relaxes in between
   for (const n of nodes.values()) {
@@ -192,16 +192,26 @@ function clampToSegment(seg, x, z, margin) {
       if (wsum) n.y = s / wsum;
     }
   }
-  for (const { w, a, b, cum, L } of links) {
-    const src = w.pts.map((p, i) => ({ x: p.x, z: p.z, y: a.y + ((b.y - a.y) * cum[i]) / L }));
-    // resample, carrying the height
-    const pts = [src[0]];
-    for (let i = 1; i < src.length; i++) {
-      const p = src[i - 1], q = src[i];
+  // Is (x, z) still on the Gardiner's or the DVP's deck at height y (the start of a ramp that has yet to branch off)?
+  const onMainDeck = (x, z, y) => (cells.get(cellKey(Math.floor(x / CELL), Math.floor(z / CELL))) || [])
+    .some((seg) => seg.r.kind !== 'ramp' && onSegment(seg, x, z, probe) && Math.abs(probe.y - y) < 0.5);
+  for (const { w, a, b } of links) {
+    // resample
+    const pts = [{ x: w.pts[0].x, z: w.pts[0].z }];
+    for (let i = 1; i < w.pts.length; i++) {
+      const p = w.pts[i - 1], q = w.pts[i];
       const n = Math.max(1, Math.ceil(Math.hypot(q.x - p.x, q.z - p.z) / STEP));
-      for (let k = 1; k <= n; k++) pts.push({ x: p.x + ((q.x - p.x) * k) / n, z: p.z + ((q.z - p.z) * k) / n, y: p.y + ((q.y - p.y) * k) / n });
+      for (let k = 1; k <= n; k++) pts.push({ x: p.x + ((q.x - p.x) * k) / n, z: p.z + ((q.z - p.z) * k) / n });
     }
-    indexRibbon(ribbon('ramp', w.name, Math.max(w.w, 6.5), w.lanes, pts));
+    // level with the deck it leaves (or joins) until it is clear of that deck's barriers, sloping in between
+    const cum = arc(pts);
+    const len = cum[cum.length - 1];
+    let i0 = 0, i1 = pts.length - 1;
+    while (i0 < i1 && onMainDeck(pts[i0].x, pts[i0].z, a.y)) i0++;
+    while (i1 > i0 && onMainDeck(pts[i1].x, pts[i1].z, b.y)) i1--;
+    const s0 = cum[i0], s1 = Math.max(cum[i1], s0 + 1);
+    for (let i = 0; i < pts.length; i++) pts[i].y = a.y + (b.y - a.y) * smooth(Math.min(1, Math.max(0, (cum[i] - s0) / (s1 - s0))));
+    if (len > 0) indexRibbon(ribbon('ramp', w.name, Math.max(w.w, 6.5), w.lanes, pts));
   }
 }
 
@@ -258,6 +268,18 @@ function along(r, s) {
   const t = Math.min(1, Math.max(0, (s - cum[i]) / L));
   const dx = (b.x - a.x) / L, dz = (b.z - a.z) / L;
   return { x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t, y: a.y + (b.y - a.y) * t, rx: -dz, rz: dx };
+}
+
+// Does another deck or ramp run under a pier's cap beam (width w, centred on (x, z), across yaw) below height yMax?
+// Such a pier would stand in the lower road, so it is left out
+function roadUnder(x, z, yaw, w, yMax) {
+  const rx = Math.cos(yaw), rz = -Math.sin(yaw);
+  for (let o = -w / 2; o <= w / 2; o += 1) {
+    for (const a of [-1.4, 0, 1.4]) {
+      if (surfaceAt(x + rx * o + Math.sin(yaw) * a, z + rz * o + Math.cos(yaw) * a, yMax)) return true;
+    }
+  }
+  return false;
 }
 
 function buildExpressways(group, highwayLanes) {
@@ -360,7 +382,7 @@ function buildExpressways(group, highwayLanes) {
       }
       run += L;
       const h = b.y - DECK_T;
-      if (run >= 32 && h > 3) {
+      if (run >= 32 && h > 3 && !roadUnder(b.x, b.z, yaw, r.w - 2, h - 1)) {
         run = 0;
         push('concrete', boxGeo(b.x, h / 2, b.z, 1.8, h, 1.6, yaw));
         push('concrete', boxGeo(b.x, h - 0.6, b.z, r.w - 2, 1.2, 2.0, yaw));

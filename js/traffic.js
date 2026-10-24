@@ -1303,6 +1303,7 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
   // suspension kicks and sparks
   function collideWithPlayer(v, rotY, halfW, halfL) {
     const pe = player.entity;
+    if (pe.position.y > 2.5) return; // up on an expressway's deck or ramp, over the street
     const relX = pe.position.x - v.x;
     const relZ = pe.position.z - v.z;
     if (Math.abs(relX) > halfL + 3 || Math.abs(relZ) > halfL + 3) return;

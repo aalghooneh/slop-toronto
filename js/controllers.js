@@ -236,7 +236,8 @@ class ThirdPersonControllerManager {
       ent.position.x = destination.x;
       ent.position.z = destination.z;
       ent.heading = heading;
-      ent.position.y = heli ? altitude : this.getGroundHeight(destination.x, destination.z, this.activeMode);
+      // (a saved height puts it back on the expressway deck it was on rather than the street under it)
+      ent.position.y = heli ? altitude : this.getGroundHeight(destination.x, destination.z, this.activeMode, savedAltitude ?? 0);
     }
     ent.speed = 0;
     if (this.activeMode === 'person') {
@@ -940,6 +941,13 @@ class ThirdPersonControllerManager {
           while (i + 1 < near.length && near[i + 1]._order <= order) i++;
         }
       }
+    }
+
+    // Pushed off the deck it is driving on (by a collider): back inside its barriers, so it can't drop through the road
+    if (onDeck && entity._deckSeg && pos.y > 1.0 && !surfaceAt(pos.x, pos.z, pos.y + 1.0)) {
+      const c = clampToSegment(entity._deckSeg, pos.x, pos.z, radius * 0.6);
+      pos.x = c.x;
+      pos.z = c.z;
     }
   }
 
