@@ -396,7 +396,7 @@ export function createMotorVoice(context, resources, kind, output) {
     const roadLevel = smoothParameter(roadGain.gain, 0.18);
     const roadFrequency = smoothParameter(roadLowpass.frequency, 0.18, 1);
     const noiseRate = smoothParameter(road.playbackRate, 0.12, 0.001);
-    render = (speed, load, doppler, now, verticalSpeed, skid) => {
+    render = (speed, load, doppler, now, verticalSpeed, skid, engineRPM) => {
       const first = previousTime < 0;
       const dt = first ? 0.1 : clamp(now - previousTime, 0, 0.5);
       previousTime = now;
@@ -422,11 +422,12 @@ export function createMotorVoice(context, resources, kind, output) {
       // Wheel-coupled RPM, with torque-converter slip at low speed. Coasting retains engine braking rather than
       // dropping straight to idle; hysteresis and a minimum gear dwell prevent hunting around a shift boundary.
       const slip = throttle * (bus ? 600 : 1500) * Math.max(0.12, 1 - speed / 16);
-      const targetRPM = clamp(Math.max(idle, speed * ratios[gear]) + slip, idle, bus ? 2900 : 6200);
+      // (the player's car reports its engine's own revs, gear changes and all)
+      const targetRPM = engineRPM > 0 ? engineRPM : clamp(Math.max(idle, speed * ratios[gear]) + slip, idle, bus ? 2900 : 6200);
       rpm = first ? targetRPM : rpm + (targetRPM - rpm) * (1 - Math.exp(-dt / (targetRPM > rpm ? 0.12 : 0.075)));
       const pitch = (0.97 + variation * 0.06) * doppler;
       const effort = Math.min(1, throttle + speed * 0.005);
-      const torque = now < shiftUntil ? 0.52 : 1;
+      const torque = now < shiftUntil && !(engineRPM > 0) ? 0.52 : 1;
       const rolling = Math.min(1.35, speed / 28);
       exhaustRate(rpm / sound.referenceRPM * pitch, now);
       highExhaustRate(rpm / sound.referenceRPM * pitch * bankRatio, now);
@@ -570,7 +571,7 @@ export function createMotorVoice(context, resources, kind, output) {
     };
   }
 
-  function update({ speed = 0, load = 0, doppler = 1, seed = 0, verticalSpeed = 0, skid = 0 } = {}, now = context.currentTime) {
+  function update({ speed = 0, load = 0, doppler = 1, seed = 0, verticalSpeed = 0, skid = 0, rpm = 0 } = {}, now = context.currentTime) {
     if (disposed) return;
     const safeSeed = Number.isFinite(seed) ? seed : 0;
     if (safeSeed !== lastSeed) {
@@ -585,7 +586,8 @@ export function createMotorVoice(context, resources, kind, output) {
       Number.isFinite(doppler) ? clamp(doppler, 0.5, 2) : 1,
       time,
       Number.isFinite(verticalSpeed) ? clamp(verticalSpeed, -30, 30) : 0,
-      Number.isFinite(skid) ? clamp(skid, 0, 1) : 0
+      Number.isFinite(skid) ? clamp(skid, 0, 1) : 0,
+      Number.isFinite(rpm) ? clamp(rpm, 0, 9000) : 0
     );
   }
 

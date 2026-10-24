@@ -32,10 +32,76 @@ const SPAWN_X = SPAWN.x; // Yonge St between Queen St and King St (city-config.j
 const SPAWN_Z = SPAWN.z - 12;
 const groundCollider = { type: 'ground' };
 
-const CAR_DRIVE = {
-  speed: 23.5, boostSpeed: 36, reverseSpeed: 10.5, acceleration: 14, boostAcceleration: 21,
-  rolling: 0.12, drag: 0.0004, brake: 9, handbrake: 7
+// The Buick Envision's powertrain: a 2.0 L turbo four (400 N·m from 1,500 rpm, ~188 kW), an automatic gearbox and
+// all-wheel drive moving ~1,800 kg. Nothing caps its speed: it runs out of power against the air (about 230 km/h)
+const ENVISION = {
+  mass: 1800, wheelRadius: 0.36, finalDrive: 3.5, efficiency: 0.85,
+  gears: [4.48, 2.87, 1.84, 1.41, 1.0, 0.74], reverse: 3.8,
+  idle: 800, stall: 2200, redline: 6300, reverseLimit: 3000, peakTorque: 400, peakPower: 188000,
+  shiftTime: 0.28, // the drive is cut while the box changes gear
+  traction: 5.2, // m/s²: what the tyres (and the traction control) put down pulling away, all four driven
+  drag: 3.06e-4, // ½ ρ Cd A / m (Cd A ≈ 0.9 m²): a = drag v²
+  rolling: 0.13, // m/s²: tyre rolling resistance
+  brake: 9.5, handbrake: 7
 };
+const RPM_PER_MS = 60 / (2 * Math.PI * ENVISION.wheelRadius); // wheel rpm per m/s
+
+// Full-load engine torque (N·m): building to the plateau off idle, then held to peak power
+function engineTorque(rpm) {
+  const E = ENVISION;
+  const r = Math.max(E.idle, Math.min(E.redline, rpm));
+  const plateau = r < 1500 ? E.peakTorque * (0.6 + 0.4 * (r - E.idle) / (1500 - E.idle)) : E.peakTorque;
+  return Math.min(plateau, E.peakPower / (r * Math.PI / 30));
+}
+
+// One step of the car's longitudinal motion: picks the gear like an automatic (holding gears to the redline with the
+// pedal floored, short-shifting when cruising, kicking down for power), drives the wheels through it, and takes off the
+// air drag, rolling resistance and engine braking. `throttle` -1..1 (backward brakes, then reverses); `pedal` 0..1.
+// Leaves c.gear (-1 reverse), c.rpm and c.shiftTimer for the sound and the dashboard; returns the new speed
+function driveCar(c, throttle, pedal, dt) {
+  const E = ENVISION;
+  const v = c.speed;
+  if (!Number.isInteger(c.gear)) c.gear = 0;
+  const braking = throttle * v < 0 && Math.abs(v) > 0.3;
+  if (!braking) {
+    if (throttle < 0 && v <= 0.3) c.gear = -1;
+    else if (throttle > 0 && v >= -0.3 && c.gear < 0) c.gear = 0;
+  }
+  c.shiftTimer = Math.max(0, (c.shiftTimer || 0) - dt);
+  const wheelRpm = Math.abs(v) * RPM_PER_MS;
+  const ratioOf = (g) => (g < 0 ? E.reverse : E.gears[g]) * E.finalDrive;
+  if (c.gear >= 0 && !c.shiftTimer) {
+    const up = pedal > 0.95 ? E.redline - 250 : 2200 + pedal * 3000;
+    const down = pedal > 0.95 ? E.redline - 1500 : 1300 + pedal * 1800;
+    if (c.gear < E.gears.length - 1 && wheelRpm * ratioOf(c.gear) > up) {
+      c.gear++;
+      c.shiftTimer = E.shiftTime;
+    } else if (c.gear > 0 && wheelRpm * ratioOf(c.gear) < down && wheelRpm * ratioOf(c.gear - 1) < up * 0.9) {
+      c.gear--;
+      c.shiftTimer = pedal > 0 ? E.shiftTime * 0.7 : 0;
+    }
+  }
+  const ratio = ratioOf(c.gear);
+  // (the torque converter lets the engine spin up ahead of the wheels pulling away, to its stall speed)
+  const rpm = Math.max(wheelRpm * ratio, !braking && pedal > 0 ? E.stall : E.idle);
+  c.rpm = Math.min(E.redline, rpm);
+
+  let push = 0; // along the gear's direction of travel
+  if (!braking && pedal > 0 && !c.shiftTimer && rpm < (c.gear < 0 ? E.reverseLimit : E.redline)) {
+    // (the spinning engine & wheels add to the mass to get moving, the more so in the low gears)
+    const inertia = 1.04 + 0.004 * (ratio / E.finalDrive) ** 2;
+    push = Math.min(E.traction, (engineTorque(rpm) * pedal * ratio * E.efficiency) / (E.wheelRadius * E.mass * inertia));
+  }
+  // what slows it: the brakes, the air, the tyres and, off the pedal, the engine held by the gearbox
+  let resist = E.rolling + E.drag * v * v;
+  if (braking) resist += E.brake * Math.abs(throttle);
+  else if (!pedal) resist += ((20 + 0.012 * rpm) * ratio * E.efficiency) / (E.wheelRadius * E.mass);
+  const dir = c.gear < 0 ? -1 : 1;
+  let next = v + dir * push * dt;
+  const slow = resist * dt;
+  next = Math.abs(next) <= slow ? (push ? next : 0) : next - Math.sign(next) * slow;
+  return next;
+}
 const BICYCLE_DRIVE = {
   speed: 12.8, boostSpeed: 19, reverseSpeed: 4.5, acceleration: 9, boostAcceleration: 13.5,
   rolling: 0.05, drag: 0.002, brake: 7.5 // Backward input is scaled to 0.6, giving 4.5 m/s² braking.
@@ -247,7 +313,8 @@ class ThirdPersonControllerManager {
       ent.crowd.add(ent.rig, 0);
       ent.crowd.end();
     } else if (this.activeMode === 'car') {
-      ent.vx = ent.vz = ent.angularVel = ent.steerAngle = ent.skid = 0;
+      ent.vx = ent.vz = ent.angularVel = ent.steerAngle = ent.skid = ent.gear = ent.shiftTimer = 0;
+      ent.rpm = ENVISION.idle;
       ent.pitchVel = ent.rollVel = ent.heaveY = ent.heaveVel = 0;
       ent.chassisPivot.rotation.x = ent.chassisPivot.rotation.z = 0;
       ent.chassisPivot.position.y = 0;
@@ -460,6 +527,9 @@ class ThirdPersonControllerManager {
       speed: 0,
       vx: 0,
       skid: 0,
+      gear: 0,
+      rpm: ENVISION.idle,
+      shiftTimer: 0,
       vz: 0,
       angularVel: 0,
       pitchVel: 0,
@@ -1055,15 +1125,15 @@ class ThirdPersonControllerManager {
 
   updateCar(dt) {
     const c = this.entities.car;
-    const maxSpeed = this.keys.boost ? CAR_DRIVE.boostSpeed : CAR_DRIVE.speed;
-
     let throttle = 0;
     if (this.keys.forward) throttle = this.keys.forward;
     else if (this.keys.backward) throttle = -this.keys.backward;
 
     const braking = c.speed * throttle < 0;
     const previousSpeed = c.speed;
-    c.speed = driveSpeed(c.speed, throttle, this.keys.boost, dt, CAR_DRIVE);
+    // the keys press the accelerator most of the way; Shift floors it (a gamepad trigger or the touch stick is analog)
+    const pedal = braking ? 0 : Math.min(1, Math.abs(throttle) * (this.keys.boost ? 1 : 0.8));
+    c.speed = driveCar(c, throttle, pedal, dt);
     const acceleration = dt > 0 ? (c.speed - previousSpeed) / dt : 0;
 
     let steerInput = 0;
@@ -1077,7 +1147,7 @@ class ThirdPersonControllerManager {
     // handbrake (Space) locks the rear for power slides and handbrake turns. The car moves with its momentum (forward
     // speed along the nose + the slide across it in vx/vz), which is split again along the new heading every frame
     const handbrake = !!this.keys.up && Math.hypot(c.speed, c.vx, c.vz) > 2;
-    if (handbrake) c.speed = Math.sign(c.speed) * Math.max(0, Math.abs(c.speed) - CAR_DRIVE.handbrake * dt);
+    if (handbrake) c.speed = Math.sign(c.speed) * Math.max(0, Math.abs(c.speed) - ENVISION.handbrake * dt);
     const momentumX = Math.sin(c.heading) * c.speed + c.vx;
     const momentumZ = Math.cos(c.heading) * c.speed + c.vz;
     const moving = Math.hypot(momentumX, momentumZ);
@@ -1114,8 +1184,8 @@ class ThirdPersonControllerManager {
 
     // 3-DOF Spring-Damper Chassis Suspension (Pitch, Roll & Vertical Heave)
     // (soft and floaty: the body dives under braking, squats under power and leans hard into the corners & slides)
-    const targetPitch = -Math.max(-1, Math.min(1, acceleration / CAR_DRIVE.acceleration)) * 0.065;
-    const targetRoll = -c.steerAngle * (c.speed / maxSpeed) * 0.15 + Math.max(-1, Math.min(1, lateral / 10)) * 0.09;
+    const targetPitch = -Math.max(-1, Math.min(1, acceleration / ENVISION.traction)) * 0.065;
+    const targetRoll = -c.steerAngle * Math.min(1, c.speed / 30) * 0.15 + Math.max(-1, Math.min(1, lateral / 10)) * 0.09;
     const springK = 42.0;
     const dampC = 6.2;
     c.pitchVel += ((targetPitch - c.chassisPivot.rotation.x) * springK - c.pitchVel * dampC) * dt;

@@ -185,9 +185,15 @@ for (const mode of ['Person', 'Car', 'Cyclist', 'Helicopter']) {
     for (const reverse of [false, true]) {
       const full = advanceWithTouch(mode, 1, reverse);
       const partial = advanceWithTouch(mode, 0.4, reverse);
-      // (the car's momentum is split again along its new heading, so turning further costs it a hair of speed)
-      const tolerance = mode === 'Car' ? 1e-3 : 1e-10;
-      assert.ok(Math.abs(partial.speed - full.speed * 0.4) < tolerance, 'movement should scale with joystick strength');
+      if (mode === 'Car') {
+        // Pulling away, the car's tyres can't use all of a floored engine's pull (and its momentum is split again along
+        // its new heading), so a partial pedal gives at least its share of a full one's speed (less the tyres' rolling
+        // resistance, the same whatever the pedal: 0.013 m/s over the 0.1 s step), and less than all of it
+        assert.ok(partial.speed * Math.sign(full.speed) > Math.abs(full.speed) * 0.4 - 0.015, 'movement should scale with joystick strength');
+        assert.ok(Math.abs(partial.speed) < Math.abs(full.speed), 'a partial pedal is slower than a full one');
+      } else {
+        assert.ok(Math.abs(partial.speed - full.speed * 0.4) < 1e-10, 'movement should scale with joystick strength');
+      }
       const turn = mode === 'Car' ? 'steerAngle' : 'heading';
       assert.ok(Math.abs(partial[turn] - full[turn] * 0.4) < 1e-10, 'turning should scale with joystick strength');
       if (mode === 'Helicopter') {

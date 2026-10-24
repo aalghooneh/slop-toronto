@@ -98,7 +98,7 @@ class TouchControls {
     this.reset();
     if (!this.root) return;
     this.mode = mode;
-    const labels = { boost: mode === 'person' || mode === 'cyclist' ? 'Sprint' : 'Boost', up: mode === 'helicopter' ? 'Ascend' : mode === 'car' ? 'Handbrake' : 'Jump', down: 'Descend' };
+    const labels = { boost: mode === 'person' || mode === 'cyclist' ? 'Sprint' : mode === 'car' ? 'Floor it' : 'Boost', up: mode === 'helicopter' ? 'Ascend' : mode === 'car' ? 'Handbrake' : 'Jump', down: 'Descend' };
     for (const button of this.buttons) {
       const action = button.getAttribute('data-touch-action');
       button.hidden = (action === 'up' && mode === 'cyclist') || (action === 'down' && mode !== 'helicopter');

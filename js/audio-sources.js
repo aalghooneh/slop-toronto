@@ -35,7 +35,7 @@ function roadLoad(speed, acceleration, maxAcceleration) {
   return unit(acceleration / maxAcceleration + unit(speed / 2) * (0.12 + 0.28 * unit(speed / 30) ** 2));
 }
 
-function writeMotor(item, id, kind, x, y, z, speed, load, heading, police, player, seed, blocked, gain, range, verticalSpeed = 0, skid = 0) {
+function writeMotor(item, id, kind, x, y, z, speed, load, heading, police, player, seed, blocked, gain, range, verticalSpeed = 0, skid = 0, rpm = 0) {
   item.id = id;
   item.kind = kind;
   item.x = x;
@@ -45,6 +45,7 @@ function writeMotor(item, id, kind, x, y, z, speed, load, heading, police, playe
   item.load = unit(load);
   item.verticalSpeed = Number.isFinite(verticalSpeed) ? verticalSpeed : 0;
   item.skid = Number.isFinite(skid) ? unit(skid) : 0;
+  item.rpm = Number.isFinite(rpm) ? rpm : 0;
   item.heading = heading;
   item.police = police;
   item.player = player;
@@ -109,7 +110,7 @@ class CityAudioSources {
     return dx * dx + dy * dy + dz * dz;
   }
 
-  motor(id, kind, x, y, z, speed, load, heading, police, player, seed, blocked, gain = 1, range = kind === 'helicopter' ? 500 : 160, verticalSpeed = 0, skid = 0) {
+  motor(id, kind, x, y, z, speed, load, heading, police, player, seed, blocked, gain = 1, range = kind === 'helicopter' ? 500 : 160, verticalSpeed = 0, skid = 0, rpm = 0) {
     const d2 = this.distanceSq(x, y, z);
     if (!Number.isFinite(d2)) return;
     if (police && d2 <= SIREN_RANGE * SIREN_RANGE) {
@@ -120,7 +121,7 @@ class CityAudioSources {
     if (d2 > reach * reach) return;
     const item = this.motors.take(player ? -1 : d2);
     if (!item) return;
-    writeMotor(item, id, kind, x, y, z, speed, load, heading, police, player, seed, blocked, gain, range, verticalSpeed, skid);
+    writeMotor(item, id, kind, x, y, z, speed, load, heading, police, player, seed, blocked, gain, range, verticalSpeed, skid, rpm);
   }
 
   person(id, x, y, z, speed, grounded, rig, player = false, priority = player) {
@@ -188,7 +189,7 @@ class CityAudioSources {
         const gain = player ? 1 : helicopter ? 0.22 : 0.5;
         const range = helicopter ? (player ? 500 : 200) : 160;
         this.motor(entity, kind, x, y + (helicopter ? 2.66 : 0.7), z, player ? entity.speed : 0, load, entity.heading,
-          false, player, seedAt(i), false, gain, range, verticalSpeed, player ? entity.skid : 0);
+          false, player, seedAt(i), false, gain, range, verticalSpeed, player ? entity.skid : 0, player ? entity.rpm : 0);
       }
     }
 
