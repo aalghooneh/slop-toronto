@@ -1142,7 +1142,7 @@ function createLoftedCarMaterial(spec, fixedColorHex = null) {
     .mul(smoothstep(0.725, 0.73, p.y))
     .mul(smoothstep(0.81, 0.805, p.y))
     .mul(step(abs(p.z.sub(doorMid)), 0.22));
-  let painted = mix(mix(paint, color(0x1d3f8f), max(band, lettering).mul(isNYPD)), color(0x6fa8dc), pin.mul(isNYPD));
+  let painted = mix(mix(paint, color(0x1d3f8f), max(band, lettering).mul(isNYPD)), color(0xd2232a), pin.mul(isNYPD));
   if (spec.sign) {
     const badge = roundedRect(vec2(p.z.sub(doorMid), p.y.sub(0.66)), vec2(0.21, 0.052), 0.012).mul(isSide).mul(isBody);
     const emblem = smoothstep(0.042, 0.036, length(vec2(abs(p.z.sub(doorMid)).sub(0.15), p.y.sub(0.66))));

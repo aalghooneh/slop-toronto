@@ -26,6 +26,8 @@ import {
 // building footprints standing on it (the real towers among them), the parks, the expressways, the real street
 // centrelines (labelled along their course), the rest of the city along the lake and the Toronto Islands.
 
+// Toronto Hustle's colours on the maps (gig-world.js lights the city in the same ones)
+const GIG_COLORS = { fare: '#ffc21a', pickup: '#ffc21a', delivery: '#ff8a4d', tour: '#55dcff', ring: '#55dcff', dropoff: '#5cf0a4' };
 const FONT = 'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
 const MIN_ZOOM = 0.015; // full map, pixels per metre: the whole waterfront, Mississauga to Scarborough
 const MAX_ZOOM = 3.0; // single lots
@@ -397,12 +399,12 @@ function drawRoute(ctx, x0, y0, x1, y1, width) {
 }
 
 // Waypoint: a taxi-yellow target
-function drawWaypoint(ctx, x, y, r) {
+function drawWaypoint(ctx, x, y, r, color = MAP.route) {
   ctx.fillStyle = MAP.halo;
   ctx.beginPath();
   ctx.arc(x, y, r + 2, 0, Math.PI * 2);
   ctx.fill();
-  ctx.fillStyle = MAP.route;
+  ctx.fillStyle = color;
   ctx.beginPath();
   ctx.arc(x, y, r, 0, Math.PI * 2);
   ctx.fill();
@@ -465,6 +467,8 @@ class CityMapSystem {
     // Default GTA 6-style active GPS waypoint (the CN Tower)
     const cn = LANDMARKS.find((l) => l.id === 'cntower') || { x: POINTS.cnTower.x, z: POINTS.cnTower.z };
     this.waypoint = { x: cn.x, z: cn.z, name: 'CN Tower' };
+    // Toronto Hustle (gigs.js), set by main.js: its offers, the job's destination and the way there replace the waypoint
+    this.gigs = null;
 
     // Street names measured before the web font arrived would be spaced for the fallback font: measure & draw again
     if (document.fonts) {
@@ -925,6 +929,56 @@ class CityMapSystem {
     ctx.textBaseline = 'alphabetic';
   }
 
+  // Toronto Hustle on a map: the route by road from the player (px, pz) to the target in the target's colour, a dot for
+  // every offer and a target for where the player is being sent. With clampX / clampY (the radar's half size) the
+  // target stays on the map's edge when it is further away than the map shows
+  drawGigs(ctx, toX, toY, px, pz, width, r, clampX = Infinity, clampY = Infinity) {
+    const gigs = this.gigs;
+    const target = gigs.target;
+    const kind = target ? (target.kind === 'offer' ? target.ref.kind : target.kind) : null;
+    const color = GIG_COLORS[kind] || MAP.route;
+    const route = gigs.route;
+    if (target) {
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(toX(px), toY(pz));
+      if (route) for (let i = gigs.routeIndex + 1; i < route.points.length; i++) ctx.lineTo(toX(route.points[i].x), toY(route.points[i].z));
+      else ctx.lineTo(toX(target.x), toY(target.z));
+      if (!route) ctx.setLineDash([width * 2, width * 2.5]);
+      ctx.strokeStyle = MAP.halo;
+      ctx.lineWidth = width + 3;
+      ctx.stroke();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    for (const o of gigs.offers) {
+      if (target && o === target.ref) continue;
+      const x = toX(o.x);
+      const y = toY(o.z);
+      if (Math.abs(x) > clampX || Math.abs(y) > clampY) continue;
+      ctx.fillStyle = MAP.halo;
+      ctx.beginPath();
+      ctx.arc(x, y, r * 0.8 + 1.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = GIG_COLORS[o.kind] || MAP.route;
+      ctx.beginPath();
+      ctx.arc(x, y, r * 0.8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    if (target) {
+      let x = toX(target.x);
+      let y = toY(target.z);
+      const k = Math.max(Math.abs(x) / clampX, Math.abs(y) / clampY, 1);
+      x /= k;
+      y /= k;
+      const pulse = 1 + 0.18 * Math.sin(performance.now() / 180);
+      drawWaypoint(ctx, x, y, r * pulse, color);
+    }
+  }
+
   update() {
     // The full map covers the whole screen, radar included
     if (this.isFullMapOpen) {
@@ -1023,8 +1077,10 @@ class CityMapSystem {
       }
     }
 
-    // GPS route to the active waypoint
-    if (this.waypoint) {
+    // The job in hand and the way to it by road (gigs.js), or else the GPS route to the active waypoint
+    if (this.gigs && this.gigs.enabled) {
+      this.drawGigs(ctx, toX, toY, px, pz, 3, 4.5, w * 0.5 - 9, h * 0.5 - 9);
+    } else if (this.waypoint) {
       const wx = toX(this.waypoint.x);
       const wy = toY(this.waypoint.z);
       drawRoute(ctx, 0, 0, wx, wy, 3);
@@ -1113,8 +1169,10 @@ class CityMapSystem {
     const toX = (wx) => v.toX(wx);
     const toY = (wz) => v.toY(wz);
 
-    // GPS route on the full map
-    if (this.waypoint) {
+    // The job in hand and the way to it (gigs.js), or else the GPS route on the full map
+    if (this.gigs && this.gigs.enabled) {
+      this.drawGigs(ctx, toX, toY, ent.position.x, ent.position.z, 4, 7);
+    } else if (this.waypoint) {
       const wx = toX(this.waypoint.x);
       const wy = toY(this.waypoint.z);
       drawRoute(ctx, toX(ent.position.x), toY(ent.position.z), wx, wy, 4);

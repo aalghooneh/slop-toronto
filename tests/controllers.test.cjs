@@ -435,3 +435,92 @@ test('player clearance respects altitude and permits a ground arrival under an a
   helicopter.position.y = 1;
   assert.notDeepEqual({ ...controller.teleportActiveTo(0, 0) }, { x: 0, z: 0 }, 'a helicopter parked at street level must be avoided');
 });
+
+// The car's handling (carHandling & updateCar): driven here the way a player drives it, at 60 frames a second
+function drivingHarness() {
+  const { controller } = keyboardHarness({ CITY_BOUNDS: { minX: -1e6, maxX: 1e6, minZ: -1e6, maxZ: 1e6, sidewalkHeight: 0.22 } });
+  const car = {
+    position: { x: 0, y: 0, z: 0 }, heading: 0, speed: 0, vx: 0, vz: 0, angularVel: 0, steerAngle: 0, pitchVel: 0, rollVel: 0,
+    heaveVel: 0, heaveY: 0, wheelSpin: 0, chassisPivot: { rotation: { x: 0, z: 0 }, position: { y: 0 } }, wheels: [], health: 100, wrecked: 0
+  };
+  controller.entities = { car };
+  controller.activeMode = 'car';
+  controller.getGroundHeight = () => 0;
+  controller.resolveHorizontalCollision = () => {};
+  const drive = (seconds, keys = {}, each = null) => {
+    Object.assign(controller.keys, { forward: false, backward: false, left: false, right: false, up: false, boost: false }, keys);
+    for (let i = 0; i < seconds * 60; i++) {
+      controller.updateCar(1 / 60);
+      if (each) each();
+    }
+  };
+  const sideways = () => car.vx * Math.cos(car.heading) - car.vz * Math.sin(car.heading);
+  return { car, drive, sideways };
+}
+
+test('the car pulls away, tops out and stops like the sports car it is', () => {
+  const { car, drive } = drivingHarness();
+  let to100 = 0;
+  drive(30, { forward: true, boost: true }, () => { if (car.speed < 100 / 3.6) to100 += 1 / 60; });
+  assert.ok(to100 > 2.6 && to100 < 4.2, `0-100 km/h floored in about 3.3 s (${to100.toFixed(2)})`);
+  assert.ok(car.speed * 3.6 > 290 && car.speed * 3.6 < 350, `runs out of power near 330 km/h (${(car.speed * 3.6).toFixed(0)})`);
+
+  const braking = drivingHarness();
+  braking.car.speed = 100 / 3.6;
+  let frames = 0;
+  while (braking.car.speed > 0.1 && frames++ < 600) braking.drive(1 / 60, { backward: true });
+  assert.ok(braking.car.position.z > 28 && braking.car.position.z < 40, `stops from 100 km/h in about 33 m (${braking.car.position.z.toFixed(1)})`);
+  assert.ok(Math.abs(braking.car.heading) < 1e-6, 'in a straight line');
+});
+
+test('the car corners at about 1 g, pushing wide rather than spinning, at any speed', () => {
+  for (const kmh of [60, 100, 150, 220]) {
+    const { car, drive, sideways } = drivingHarness();
+    car.speed = kmh / 3.6;
+    let g = 0;
+    drive(4, { left: true, forward: 0.35 }, () => { g = car.lateralG; });
+    assert.ok(g > 0.9 && g < 1.35, `${kmh} km/h: holds about 1 g (${g.toFixed(2)})`);
+    assert.ok(car.heading > 0.5 && car.yawRate > 0, `${kmh} km/h: it turns left`);
+    const drift = Math.abs(Math.atan2(sideways(), car.speed));
+    assert.ok(drift < 0.14, `${kmh} km/h: the tail stays behind the nose (${(drift * 57.3).toFixed(1)}°)`);
+    drive(2.5, { forward: 0.35 });
+    assert.ok(Math.abs(car.yawRate) < 0.02 && Math.abs(sideways()) < 0.2, `${kmh} km/h: straightens up when the wheel is let go`);
+  }
+});
+
+test('a tap of the wheel flat out is a lane change, not a spin', () => {
+  const { car, drive, sideways } = drivingHarness();
+  car.speed = 250 / 3.6;
+  drive(0.3, { left: true, forward: 0.5 });
+  drive(2.5, { forward: 0.5 });
+  assert.ok(car.heading > 0 && car.heading < 0.3, `a few degrees of heading (${car.heading.toFixed(3)} rad)`);
+  assert.ok(Math.abs(car.yawRate) < 0.01 && Math.abs(sideways()) < 0.1, 'settled');
+});
+
+test('the handbrake swings the tail round, and the car drives away from it', () => {
+  const { car, drive } = drivingHarness();
+  car.speed = 65 / 3.6;
+  let skid = 0;
+  drive(1.2, { left: true, up: true }, () => { skid = Math.max(skid, car.skid); });
+  assert.ok(car.heading > 1.2, `it has turned through most of a right angle (${car.heading.toFixed(2)} rad)`);
+  assert.ok(skid >= 0.6, 'tyres sliding');
+  drive(2.5, { forward: true });
+  assert.ok(car.speed > 10 && Math.abs(car.yawRate) < 0.05, 'back under way, pointing where it goes');
+});
+
+test('a wet road holds less, and the car stands still when nothing is asked of it', () => {
+  const dry = drivingHarness();
+  const wet = drivingHarness();
+  wet.car.gripScale = 0.74;
+  let gDry = 0;
+  let gWet = 0;
+  dry.car.speed = wet.car.speed = 100 / 3.6;
+  dry.drive(4, { left: true, forward: 0.35 }, () => { gDry = dry.car.lateralG; });
+  wet.drive(4, { left: true, forward: 0.35 }, () => { gWet = wet.car.lateralG; });
+  assert.ok(gWet < gDry * 0.85, `less cornering grip in the rain (${gWet.toFixed(2)} g against ${gDry.toFixed(2)} g)`);
+
+  const parked = drivingHarness();
+  parked.drive(3, { left: true });
+  assert.equal(parked.car.speed, 0);
+  assert.ok(Math.abs(parked.car.heading) < 1e-9, 'turning the wheel at a standstill goes nowhere');
+});

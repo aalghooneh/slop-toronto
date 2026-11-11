@@ -51,13 +51,21 @@
   <link rel="modulepreload" href="./js/audio-sources.js" />
   <link rel="modulepreload" href="./js/audio-acoustics.js" />
   <link rel="modulepreload" href="./js/audio-system.js" />
+  <link rel="modulepreload" href="./js/route-finder.js" />
+  <link rel="modulepreload" href="./js/gigs.js" />
+  <link rel="modulepreload" href="./js/gig-world.js" />
+  <link rel="modulepreload" href="./js/gig-hud.js" />
+  <link rel="modulepreload" href="./js/car-effects.js" />
+  <link rel="modulepreload" href="./js/weather.js" />
+  <link rel="modulepreload" href="./js/cranes.js" />
+  <link rel="modulepreload" href="./js/player-car.js" />
   <link rel="modulepreload" href="./js/main.js" />
   <script type="module" src="./js/main.js"></script>
   <!-- Inter (UI) & Overpass (street-name signs: modelled on Highway Gothic, the US road sign typeface) -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400..800&amp;family=Overpass:wght@600;700&amp;display=swap" />
-  <link rel="stylesheet" href="./css/style.css?v=20261022-repo-link" />
+  <link rel="stylesheet" href="./css/style.css?v=20261110-hustle2" />
 </head>
 <body>
   <!-- Icon sprite (24 × 24 stroke icons, drawn in currentColor) -->
@@ -71,6 +79,8 @@
       <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.8v2.1M12 19.1v2.1M2.8 12h2.1M19.1 12h2.1M5.5 5.5 7 7M17 17l1.5 1.5M5.5 18.5 7 17M17 7l1.5-1.5"/></symbol>
       <symbol id="i-twilight" viewBox="0 0 24 24"><path d="M3 15.5h18M7.5 19h9M8 15.5a4 4 0 0 1 8 0M17.5 4v3.2M15.9 5.6h3.2M7 7.4v1.8M6.1 8.3h1.8"/></symbol>
       <symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.6A7.8 7.8 0 0 1 9.4 4.5a7.8 7.8 0 1 0 10.1 10.1z"/></symbol>
+      <symbol id="i-rain" viewBox="0 0 24 24"><path d="M7 15.5a4.2 4.2 0 0 1-.6-8.36 5.6 5.6 0 0 1 10.9 1.1A3.7 3.7 0 0 1 17 15.5M8.5 18.5l-1 2.5M12.5 18.5l-1 2.5M16.5 18.5l-1 2.5"/></symbol>
+      <symbol id="i-snow" viewBox="0 0 24 24"><path d="M12 3v18M4.2 7.5l15.6 9M19.8 7.5l-15.6 9M9.6 4.6 12 7l2.4-2.4M9.6 19.4 12 17l2.4 2.4"/></symbol>
       <symbol id="i-pin" viewBox="0 0 24 24"><path d="M12 21.2s-6.6-5.7-6.6-11.2a6.6 6.6 0 0 1 13.2 0c0 5.5-6.6 11.2-6.6 11.2z"/><circle cx="12" cy="10" r="2.4"/></symbol>
       <symbol id="i-map" viewBox="0 0 24 24"><path d="M9 4.5 3.5 6.6v13l5.5-2.1 6 2.1 5.5-2.1v-13L15 6.6 9 4.5zM9 4.5v13M15 6.6v13"/></symbol>
       <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12s3.5-6.5 9.5-6.5 9.5 6.5 9.5 6.5-3.5 6.5-9.5 6.5S2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.8"/></symbol>
@@ -134,6 +144,9 @@
           <svg class="icon" aria-hidden="true"><use href="#i-moon"/></svg><span class="seg-label">Night</span>
         </button>
       </div>
+      <button id="btn-weather" class="tool-btn" type="button" title="Weather: clear, rain, snow [T]" aria-label="Weather: clear">
+        <svg class="icon" aria-hidden="true"><use href="#i-sun"/></svg><span id="weather-label" class="tool-label">Clear</span><kbd>T</kbd>
+      </button>
       <span class="toolbar-divider" aria-hidden="true"></span>
       <button id="btn-teleport" class="tool-btn" type="button" popovertarget="teleport-popover" title="Teleport the active player">
         <svg class="icon" aria-hidden="true"><use href="#i-pin"/></svg><span class="tool-label">Teleport</span><svg class="icon icon-sm" aria-hidden="true"><use href="#i-chevron-down"/></svg>
@@ -182,7 +195,7 @@
       <button id="mode-person" class="mode-btn" data-mode="person" type="button" title="Person [1]">
         <svg class="icon" aria-hidden="true"><use href="#i-walk"/></svg><span class="mode-label">Walk</span><kbd>1</kbd>
       </button>
-      <button id="mode-car" class="mode-btn active" data-mode="car" type="button" title="Car · Buick Envision [2]">
+      <button id="mode-car" class="mode-btn active" data-mode="car" type="button" title="Car · V8 Coupé [2]">
         <svg class="icon" aria-hidden="true"><use href="#i-car"/></svg><span class="mode-label">Drive</span><kbd>2</kbd>
       </button>
       <button id="mode-cyclist" class="mode-btn" data-mode="cyclist" type="button" title="Cyclist [3]">
@@ -200,12 +213,72 @@
     <div class="wrecked-sub">Restarting in <span id="hud-wrecked-time">3</span>s</div>
   </div>
 
+  <!-- Toronto Hustle (gigs.js): the wallet under the brand, the job in hand at the top, its target in the world,
+       what was just earned, and the first-visit briefing -->
+  <div class="hud hud-wallet">
+    <section id="wallet" class="panel wallet" aria-label="Earnings and rank" hidden>
+      <div class="wallet-cash"><span class="wallet-currency">$</span><span id="wallet-cash">0</span></div>
+      <div class="wallet-rank">
+        <div class="wallet-rank-row"><span id="wallet-rank">New in Town</span><span id="wallet-streak" class="wallet-streak" hidden>×1.0</span></div>
+        <div class="gauge-meter wallet-meter" aria-hidden="true"><span id="wallet-progress"></span></div>
+        <div class="wallet-sub"><span id="wallet-next">$150 to Side Hustler</span><span id="wallet-raccoons" title="Raccoons found">0 / 40 raccoons</span></div>
+      </div>
+    </section>
+  </div>
+
+  <div class="hud hud-gig">
+    <section id="gig-card" class="panel gig-card" aria-live="polite" hidden>
+      <div class="gig-head">
+        <span id="gig-kind" class="gig-kind">Cab</span>
+        <span id="gig-title" class="gig-title"></span>
+        <span id="gig-pay" class="gig-pay"></span>
+      </div>
+      <p id="gig-line" class="gig-line" hidden></p>
+      <div class="gig-status">
+        <span id="gig-step" class="gig-step"></span>
+        <span id="gig-dist" class="gig-dist"></span>
+        <span id="gig-time" class="gig-time" hidden></span>
+      </div>
+      <div id="gig-meter" class="gauge-meter gig-meter" aria-hidden="true" hidden><span id="gig-timer-bar"></span></div>
+    </section>
+  </div>
+
+  <div id="gig-marker" class="gig-marker" aria-hidden="true" hidden>
+    <span class="gig-marker-arrow"></span>
+    <span id="gig-marker-label" class="gig-marker-label"></span>
+  </div>
+
+  <div id="gig-payout" class="payout" role="status" hidden>
+    <div id="payout-title" class="payout-title">Fare complete</div>
+    <div id="payout-stars" class="payout-stars" aria-hidden="true"></div>
+    <div id="payout-total" class="payout-total">+$0</div>
+    <div id="payout-detail" class="payout-detail"></div>
+  </div>
+
+  <div id="gig-toasts" class="gig-toasts" aria-live="off"></div>
+
+  <section id="gig-intro" class="intro" role="dialog" aria-label="How to play Toronto Hustle" hidden>
+    <div class="panel intro-card">
+      <div class="intro-kicker">Slop Toronto presents</div>
+      <h2 class="intro-title">Toronto Hustle</h2>
+      <p class="intro-lede">Rent is due and the city is yours to work. Pick a ride, follow the light.</p>
+      <ul class="intro-list">
+        <li><svg class="icon" aria-hidden="true"><use href="#i-car"/></svg><div><b>Cab fares</b><span>Stop in a yellow beacon, then get your fare where they're going before their patience runs out. Drifts and near misses pay extra.</span></div></li>
+        <li><svg class="icon" aria-hidden="true"><use href="#i-bike"/></svg><div><b>Courier runs</b><span>Collect an order at an orange beacon and deliver it while it's hot.</span></div></li>
+        <li><svg class="icon" aria-hidden="true"><use href="#i-heli"/></svg><div><b>Skyline tours</b><span>Thread the rings hung around the landmarks against the clock.</span></div></li>
+        <li><svg class="icon" aria-hidden="true"><use href="#i-walk"/></svg><div><b>Raccoon hunt</b><span>Forty raccoons are raiding green bins all over downtown. Find them.</span></div></li>
+      </ul>
+      <div class="intro-keys"><span><kbd>G</kbd> Gigs on / off</span><span><kbd>R</kbd> Repair the car</span><span><kbd>M</kbd> Map</span></div>
+      <button id="gig-intro-start" class="intro-start" type="button">Start your shift <kbd>Enter</kbd></button>
+    </div>
+  </section>
+
   <!-- Bottom-Right: Speed Cluster & Camera Switcher -->
   <div class="hud hud-bottom-right">
     <section id="hud-cluster" class="panel cluster" aria-label="Vehicle telemetry and camera">
       <div class="gauge">
         <div class="gauge-top">
-          <span id="hud-active-mode" class="gauge-label">Buick Envision</span>
+          <span id="hud-active-mode" class="gauge-label">V8 Coupé</span>
           <span class="gauge-alt"><span class="gauge-alt-label">Alt</span> <span id="hud-altitude">0</span> ft</span>
         </div>
         <div class="gauge-speed"><span id="hud-speed">0</span><span class="gauge-unit">km/h</span></div>

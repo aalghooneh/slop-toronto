@@ -48,6 +48,12 @@ class CameraSystem {
     this.followLookOffset = new THREE.Vector3();
     this.followBaseY = 0;
     this.smoothedSpeed = 0;
+    // The feel of speed (see update()): the lens widens, the camera hangs out behind a slide, leans a touch into the
+    // corners and shudders flat out and when the car takes a knock
+    this.slideYaw = 0;
+    this.leanRoll = 0;
+    this.fovKick = 0;
+    this.trauma = 0;
     this._desiredPos = new THREE.Vector3();
     this._desiredLook = new THREE.Vector3();
 
@@ -139,6 +145,11 @@ class CameraSystem {
     this.userOrbitTimer = 4.0;
   }
 
+  // A knock to the camera: 0..1, by how hard the hit was (it dies away in half a second)
+  shake(amount) {
+    if (Number.isFinite(amount)) this.trauma = Math.min(1, Math.max(this.trauma, amount));
+  }
+
   resetOrbit() {
     this.orbitYawOffset = 0;
     this.orbitPitchOffset = 0.09;
@@ -152,6 +163,7 @@ class CameraSystem {
     this.isDragging = false;
     this.resetOrbit();
     this.smoothedSpeed = 0;
+    this.slideYaw = this.leanRoll = this.fovKick = this.trauma = 0;
     this.followEntity = null;
     this.followOffset.set(0, 0, 0);
     this.followLookOffset.set(0, 0, 0);
@@ -187,7 +199,26 @@ class CameraSystem {
     this.smoothedSpeed += (Math.abs(entity.speed) - this.smoothedSpeed) * (1 - Math.exp(-dt * 3.0));
     const speedLag = this.smoothedSpeed * 0.1;
 
-    const totalYaw = entity.heading + this.orbitYawOffset;
+    // A sliding car is followed along the way it is going rather than the way it points, so a drift swings its flank
+    // (and then its nose) into view; the camera also leans a little with the steering at speed
+    const follow = this.activePresetId === 'chase' || this.activePresetId === 'action' || this.activePresetId === 'pov';
+    let slide = 0;
+    let lean = 0;
+    if (follow && entity.type === 'car') {
+      const sin = Math.sin(entity.heading);
+      const cos = Math.cos(entity.heading);
+      const lateral = (entity.vx || 0) * cos - (entity.vz || 0) * sin;
+      if (entity.speed > 4) slide = Math.max(-0.5, Math.min(0.5, Math.atan2(lateral, entity.speed) * 0.75));
+      lean = -(entity.steerAngle || 0) * Math.min(1, Math.abs(entity.speed) / 30) * 0.045 + slide * 0.05;
+    } else if (follow && entity.type === 'cyclist') {
+      lean = (entity.leanAngle || 0) * 0.18;
+    } else if (follow && entity.type === 'helicopter') {
+      lean = (entity.rollAngle || 0) * 0.22;
+    }
+    this.slideYaw += (slide - this.slideYaw) * (1 - Math.exp(-dt * 4.5));
+    this.leanRoll += (lean - this.leanRoll) * (1 - Math.exp(-dt * 5));
+
+    const totalYaw = entity.heading + this.orbitYawOffset + (this.activePresetId === 'chase' ? this.slideYaw : 0);
 
     switch (this.activePresetId) {
       case 'chase': {
@@ -363,7 +394,32 @@ class CameraSystem {
     }
 
     this.camera.position.copy(this.currentPos);
+
+    // The lens widens with speed on the follow cameras (most of all in the car)
+    const preset = this.getActivePreset();
+    const perSpeed = entity.type === 'car' ? 0.26 : entity.type === 'helicopter' ? 0.12 : 0.3;
+    const kick = follow ? Math.min(entity.type === 'car' ? 15 : 8, Math.max(0, this.smoothedSpeed - 6) * perSpeed) : 0;
+    this.fovKick += (kick - this.fovKick) * (1 - Math.exp(-dt * 2.5));
+    const fov = preset.fov + this.fovKick;
+    if (Math.abs(fov - this.camera.fov) > 0.02) {
+      this.camera.fov = fov;
+      this.camera.updateProjectionMatrix();
+    }
+
+    // Shudder: a fine rumble flat out, a jolt from a crash
+    this.trauma = Math.max(0, this.trauma - dt * 2.1);
+    const rumble = follow && entity.type === 'car' ? Math.max(0, this.smoothedSpeed - 30) * 0.0011 : 0;
+    const jolt = follow ? this.trauma * this.trauma : 0;
+    if (rumble || jolt) {
+      const t = elapsed;
+      const a = rumble + jolt * 0.3;
+      this.camera.position.x += (Math.sin(t * 71.3) + Math.sin(t * 43.7 + 1.3)) * 0.5 * a;
+      this.camera.position.y += (Math.sin(t * 63.1 + 2.1) + Math.sin(t * 37.9)) * 0.5 * a;
+      this.camera.position.z += (Math.sin(t * 57.7 + 0.7) + Math.sin(t * 49.1 + 4.2)) * 0.5 * a;
+    }
     this.camera.lookAt(this.currentLookAt);
+    const roll = this.leanRoll + (jolt ? Math.sin(elapsed * 53) * jolt * 0.02 : 0);
+    if (roll && this.camera.rotateZ) this.camera.rotateZ(roll);
   }
 }
 

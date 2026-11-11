@@ -28,22 +28,37 @@ import { HEADLIGHTS, createVehicleHeadlight, placeVehicleHeadlight } from './veh
 // Half width & half length of the player's car (the Buick Envision's body, actor-models.js BODY_SPECS.envision)
 const CAR_HALF_W = 0.94;
 const CAR_HALF_L = 2.32;
+// Its wheels, from its centre (actor-models.js BODY_SPECS.envision wheelX & wheelZ)
+const WHEEL_X = 0.83;
+const WHEEL_Z = 1.33;
 const SPAWN_X = SPAWN.x; // Yonge St between Queen St and King St (city-config.js SPAWN)
 const SPAWN_Z = SPAWN.z - 12;
 const groundCollider = { type: 'ground' };
 
-// The Buick Envision's powertrain: a 2.0 L turbo four (400 N·m from 1,500 rpm, ~188 kW), an automatic gearbox and
-// all-wheel drive moving ~1,800 kg. Nothing caps its speed: it runs out of power against the air (about 230 km/h)
+// The player's car: a mid-engined V8 coupé (4.5 L, 540 N·m, ~420 kW at 9,000 rpm), a seven-speed dual-clutch gearbox
+// and rear-wheel drive moving ~1,500 kg. Nothing caps its speed: it runs out of power against the air (about 330 km/h)
 const ENVISION = {
-  mass: 1800, wheelRadius: 0.36, finalDrive: 3.5, efficiency: 0.85,
-  gears: [4.48, 2.87, 1.84, 1.41, 1.0, 0.74], reverse: 3.8,
-  idle: 800, stall: 2200, redline: 6300, reverseLimit: 3000, peakTorque: 400, peakPower: 188000,
-  shiftTime: 0.28, // the drive is cut while the box changes gear
-  traction: 5.2, // m/s²: what the tyres (and the traction control) put down pulling away, all four driven
-  drag: 3.06e-4, // ½ ρ Cd A / m (Cd A ≈ 0.9 m²): a = drag v²
-  rolling: 0.13, // m/s²: tyre rolling resistance
-  brake: 9.5, handbrake: 7
+  mass: 1485, wheelRadius: 0.358, finalDrive: 4.44, efficiency: 0.87,
+  gears: [3.08, 2.19, 1.63, 1.29, 1.03, 0.84, 0.69], reverse: 2.98,
+  idle: 900, stall: 3000, redline: 8800, reverseLimit: 4000, peakTorque: 540, peakPower: 419000,
+  shiftTime: 0.09, // the drive is cut while the box changes gear
+  traction: 9.0, // m/s²: what the rear tyres put down pulling away, the weight thrown back onto them
+  drag: 2.7e-4, // ½ ρ Cd A / m (Cd A ≈ 0.66 m²): a = drag v²
+  rolling: 0.14, // m/s²: tyre rolling resistance
+  brake: 11.5, handbrake: 6.5
 };
+// Its chassis for the handling (see carHandling): the axles from the centre of mass (the engine sits behind the
+// seats, so the weight is to the rear), the height of the centre of mass (what throws weight forward under braking
+// and back under power), its yaw inertia, and the tyres: a Pacejka "magic formula" curve of grip against slip
+// angle that peaks near 8° and falls away a little beyond it, on a road that holds mu times the load on the tyre
+const CHASSIS = {
+  a: 1.42, b: 1.23, h: 0.46, inertia: 2350,
+  mu: 1.12, B: 10.5, C: 1.42, E: 0.25,
+  rearBias: 1.1, // the rear tyres are wider than the fronts: the car pushes on (understeers) before it spins
+  brakeFront: 0.62, // share of the braking done by the front wheels
+  downforce: 0.55 // N per (m/s)²: the air presses it onto the road at speed
+};
+const GRAVITY = 9.81;
 const RPM_PER_MS = 60 / (2 * Math.PI * ENVISION.wheelRadius); // wheel rpm per m/s
 
 // Crash damage: an impact at `speed` m/s (closing speed along the contact normal) takes this much of the car's 100
@@ -59,7 +74,7 @@ function crashDamage(speed) {
 function engineTorque(rpm) {
   const E = ENVISION;
   const r = Math.max(E.idle, Math.min(E.redline, rpm));
-  const plateau = r < 1500 ? E.peakTorque * (0.6 + 0.4 * (r - E.idle) / (1500 - E.idle)) : E.peakTorque;
+  const plateau = r < 3250 ? E.peakTorque * (0.62 + 0.38 * (r - E.idle) / (3250 - E.idle)) : E.peakTorque;
   return Math.min(plateau, E.peakPower / (r * Math.PI / 30));
 }
 
@@ -99,11 +114,12 @@ function driveCar(c, throttle, pedal, dt) {
   if (!braking && pedal > 0 && !c.shiftTimer && rpm < (c.gear < 0 ? E.reverseLimit : E.redline)) {
     // (the spinning engine & wheels add to the mass to get moving, the more so in the low gears)
     const inertia = 1.04 + 0.004 * (ratio / E.finalDrive) ** 2;
-    push = Math.min(E.traction, (engineTorque(rpm) * pedal * ratio * E.efficiency) / (E.wheelRadius * E.mass * inertia));
+    // (c.gripScale: how well the road holds the tyres, 1 dry: less in the rain, less again on snow)
+    push = Math.min(E.traction * (c.gripScale ?? 1), (engineTorque(rpm) * pedal * ratio * E.efficiency) / (E.wheelRadius * E.mass * inertia));
   }
   // what slows it: the brakes, the air, the tyres and, off the pedal, the engine held by the gearbox
   let resist = E.rolling + E.drag * v * v;
-  if (braking) resist += E.brake * Math.abs(throttle);
+  if (braking) resist += E.brake * Math.abs(throttle) * (c.gripScale ?? 1);
   else if (!pedal) resist += ((20 + 0.012 * rpm) * ratio * E.efficiency) / (E.wheelRadius * E.mass);
   const dir = c.gear < 0 ? -1 : 1;
   let next = v + dir * push * dt;
@@ -111,6 +127,79 @@ function driveCar(c, throttle, pedal, dt) {
   next = Math.abs(next) <= slow ? (push ? next : 0) : next - Math.sign(next) * slow;
   return next;
 }
+// Grip of a tyre at slip angle `alpha` (radians) as a share of its peak (Pacejka's magic formula, odd in alpha)
+function tyreCurve(alpha) {
+  const T = CHASSIS;
+  const x = T.B * alpha;
+  return Math.sin(T.C * Math.atan(x - T.E * (x - Math.atan(x))));
+}
+
+// The car's handling: a single-track ("bicycle") model with real tyres. The car has a forward speed u, a sideways
+// speed v (+ to its left) and a yaw rate r (+ turning left). Each axle's tyres run at a slip angle (between where the
+// wheel points and where it is actually going) and push back sideways with a force that follows the tyre curve,
+// scaled by the load on that axle (which shifts forward under braking and back under power) and by what is left of
+// the tyre's grip after driving or braking has taken its share (the friction circle). Out of that fall the things a
+// real car does: it pushes wide when turned in too fast, tucks its nose when the throttle is lifted mid-corner,
+// steps its tail out under power or with the rear wheels locked by the handbrake, and comes back when steered into
+// the slide. Stepped in slices of at most 1/240 s (the tyres are stiff at low speed).
+//   s: { u, v, r } is advanced in place; ax: the longitudinal acceleration asked of the tyres this frame (m/s²);
+//   driving: how much of it is the engine's (through the rear wheels) rather than the brakes'. Returns the slip
+//   angles and the lateral acceleration for the suspension, the tyre marks and the sound
+function carHandling(s, steer, ax, driving, handbrake, grip, dt, stability = 0) {
+  const T = CHASSIS;
+  const m = ENVISION.mass;
+  const L = T.a + T.b;
+  const mu = T.mu * grip;
+  const steps = Math.max(1, Math.ceil(dt * 240));
+  const h = dt / steps;
+  const cosS = Math.cos(steer);
+  const sinS = Math.sin(steer);
+  let slipF = 0;
+  let slipR = 0;
+  let ay = 0;
+  for (let i = 0; i < steps; i++) {
+    const { u, v, r } = s;
+    // Loads: static, shifted by the longitudinal acceleration, plus the air's
+    const aero = T.downforce * u * u;
+    const shift = (m * ax * T.h) / L;
+    const loadF = Math.max(0.1 * m * GRAVITY, (m * GRAVITY * T.b) / L - shift + aero * 0.4);
+    const loadR = Math.max(0.1 * m * GRAVITY, (m * GRAVITY * T.a) / L + shift + aero * 0.6);
+    // What driving or braking takes of each axle's grip
+    const forceX = m * ax;
+    const useF = driving ? 0 : Math.min(1, Math.abs(forceX * T.brakeFront) / (mu * loadF));
+    let useR = Math.min(1, Math.abs(driving ? forceX : forceX * (1 - T.brakeFront)) / (mu * loadR));
+    if (handbrake) useR = 0.96; // locked: the tyre slides, and holds next to nothing sideways
+    const keepF = Math.sqrt(1 - useF * useF);
+    const keepR = Math.sqrt(1 - useR * useR);
+    // Slip angles: each axle's sideways speed against its speed along where its wheels point (softened towards a
+    // standstill, where an angle means nothing)
+    const vF = v + T.a * r;
+    const vR = v - T.b * r;
+    const soft = 1.2;
+    slipF = Math.atan2(vF * cosS - u * sinS, Math.abs(u * cosS + vF * sinS) + soft);
+    slipR = Math.atan2(vR, Math.abs(u) + soft);
+    const forceF = -mu * loadF * keepF * tyreCurve(slipF); // along the front wheels' own left
+    const forceR = -mu * loadR * keepR * T.rearBias * tyreCurve(slipR);
+    // Sideways & yaw accelerations in the car's frame (the front force acts along the steered wheels' left)
+    ay = (forceF * cosS + forceR) / m;
+    const along = (-forceF * sinS) / m; // steering scrubs speed off
+    let yaw = (T.a * forceF * cosS - T.b * forceR) / T.inertia;
+    // Stability control: brakes single wheels to hold the car to the turn the steering asks for (the yaw rate a
+    // neutral car would settle at, no more than the road can hold), which is what keeps a fast road car pointing
+    // the way it is going. Held off while the handbrake is on or the driver has it floored (stability 0)
+    if (stability > 0 && Math.abs(u) > 6) {
+      const limit = (mu * GRAVITY) / Math.abs(u);
+      const wanted = Math.max(-limit, Math.min(limit, (u * Math.tan(steer)) / (L * (1 + 0.0016 * u * u))));
+      yaw -= (r - wanted) * stability * Math.min(1, (Math.abs(u) - 6) / 10);
+    }
+    s.r = r + yaw * h;
+    // (the frame turns with the car: forward speed feeds the sideways one and back)
+    s.v = v + (ay - u * s.r) * h;
+    s.u = u + (along + v * s.r) * h;
+  }
+  return { slipF, slipR, ay };
+}
+
 const BICYCLE_DRIVE = {
   speed: 12.8, boostSpeed: 19, reverseSpeed: 4.5, acceleration: 9, boostAcceleration: 13.5,
   rolling: 0.05, drag: 0.002, brake: 7.5 // Backward input is scaled to 0.6, giving 4.5 m/s² braking.
@@ -324,7 +413,7 @@ class ThirdPersonControllerManager {
       ent.crowd.add(ent.rig, 0);
       ent.crowd.end();
     } else if (this.activeMode === 'car') {
-      ent.vx = ent.vz = ent.angularVel = ent.steerAngle = ent.skid = ent.gear = ent.shiftTimer = 0;
+      ent.vx = ent.vz = ent.angularVel = ent.yawRate = ent.steerAngle = ent.skid = ent.gear = ent.shiftTimer = 0;
       ent.rpm = ENVISION.idle;
       ent.pitchVel = ent.rollVel = ent.heaveY = ent.heaveVel = 0;
       ent.chassisPivot.rotation.x = ent.chassisPivot.rotation.z = 0;
@@ -533,6 +622,7 @@ class ThirdPersonControllerManager {
       carState,
       headLights,
       wheels,
+      plates: { front: frontPlate, rear: rearPlate },
       position: new THREE.Vector3(SPAWN_X - 3.6, 0.0, SPAWN_Z + 12),
       heading: 0,
       speed: 0,
@@ -812,7 +902,8 @@ class ThirdPersonControllerManager {
   // The ground under (x, z) for something now at height y: an expressway's deck or ramp (expressways.js) reached
   // from there, else the street or the sidewalk
   getGroundHeight(x, z, mode = 'person', y = 0) {
-    const base = mode === 'person' && this.isPointOnSidewalk(x, z) ? CITY_BOUNDS.sidewalkHeight : 0.0;
+    // (a car as a whole stays at road level for everything that places it; its wheels ('wheel') climb the curbs)
+    const base = (mode === 'person' || mode === 'wheel') && this.isPointOnSidewalk(x, z) ? CITY_BOUNDS.sidewalkHeight : 0.0;
     const deck = surfaceAt(x, z, y + 1.0);
     return deck ? Math.max(base, deck.y) : base;
   }
@@ -998,7 +1089,8 @@ class ThirdPersonControllerManager {
               carEntity.speed = -carEntity.speed * 0.25;
             } else {
               carEntity.speed *= (1.0 - 0.62 * headOn);
-              carEntity.angularVel = (carEntity.angularVel || 0) + sideDot * (sinH * nx + cosH * nz >= 0 ? -1 : 1) * Math.min(3.2, vn * 0.22);
+              carEntity.yawRate = (carEntity.yawRate || 0) * 0.4; // (the wall stops it turning)
+            carEntity.angularVel = (carEntity.angularVel || 0) + sideDot * (sinH * nx + cosH * nz >= 0 ? -1 : 1) * Math.min(3.2, vn * 0.22);
             }
             carEntity.pitchVel = (carEntity.pitchVel || 0) + (sinH * nx + cosH * nz) * Math.min(14.0, vn) * 0.16;
             carEntity.rollVel = (carEntity.rollVel || 0) - sideDot * Math.min(14.0, vn) * 0.22;
@@ -1100,6 +1192,12 @@ class ThirdPersonControllerManager {
         spot.intensity = HEADLIGHTS.intensity * beamScale;
       }
     }
+    // (the detailed model's lamps, player-car.js: tail lamps glow after dark and flare under braking)
+    if (car.modelLights) {
+      const braking = car.carState ? car.carState.value.x : 0;
+      car.modelLights.tail.emissiveIntensity = braking ? 5.5 : 0.25 + beamScale * 1.1;
+      car.modelLights.head.emissiveIntensity = 0.08 + beamScale * 3.2;
+    }
     const bike = this.entities.cyclist;
     if (bike.headLight) {
       const bikeActive = this.activeMode === 'cyclist';
@@ -1182,7 +1280,7 @@ class ThirdPersonControllerManager {
     if (!dead && this.keys.forward) throttle = this.keys.forward;
     else if (!dead && this.keys.backward) throttle = -this.keys.backward;
 
-    const braking = c.speed * throttle < 0;
+    const braking = c.speed * throttle < 0 && Math.abs(c.speed) > 0.3;
     const previousSpeed = c.speed;
     // the keys press the accelerator most of the way; Shift floors it (a gamepad trigger or the touch stick is analog)
     const pedal = braking ? 0 : Math.min(1, Math.abs(throttle) * (this.keys.boost ? 1 : 0.8));
@@ -1193,39 +1291,57 @@ class ThirdPersonControllerManager {
     if (!dead && this.keys.left) steerInput = this.keys.left;
     if (!dead && this.keys.right) steerInput = -this.keys.right;
 
-    c.steerAngle += (steerInput * 0.52 - c.steerAngle) * Math.min(1, dt * 14);
+    // The car's motion in its own frame: forward speed, sideways speed (+ left) and yaw rate
+    const sin0 = Math.sin(c.heading);
+    const cos0 = Math.cos(c.heading);
+    const state = c._motion || (c._motion = { u: 0, v: 0, r: 0 });
+    state.u = c.speed;
+    state.v = c.vx * cos0 - c.vz * sin0;
+    state.r = c.yawRate || 0;
+    const pace = Math.abs(state.u);
+    const grip = c.gripScale ?? 1;
 
-    // Arcade handling in the spirit of the 90s car-chase games: the nose turns in sharply and the car's momentum
-    // follows it only as far as the tyres can pull it round, so at speed the tail steps out and the car slides; the
-    // handbrake (Space) locks the rear for power slides and handbrake turns. The car moves with its momentum (forward
-    // speed along the nose + the slide across it in vx/vz), which is split again along the new heading every frame
+    // Steering: full lock at parking speeds; at speed, no further than the front tyres can use (a little past the
+    // angle of their peak grip, on top of what the corner itself needs), and it turns more slowly the faster the car
+    // goes, so a tap of the key at 250 km/h is a lane change. A slide is caught the way a driver catches it: the
+    // wheels turn towards the way the car is actually going (opposite lock), on top of what the keys ask
+    const L = CHASSIS.a + CHASSIS.b;
+    const lock = Math.min(0.56, Math.atan((L * CHASSIS.mu * GRAVITY * grip) / Math.max(1, pace * pace)) + 0.105);
+    const drift = pace > 4 && state.u > 0 ? Math.atan2(state.v, pace) : 0;
+    // (only once it really is sliding: the few degrees a car drifts in any corner are left alone)
+    const catchSlide = Math.max(-0.5, Math.min(0.5, Math.sign(drift) * Math.max(0, Math.abs(drift) - 0.07) * 0.9));
+    const steerTarget = Math.max(-0.6, Math.min(0.6, steerInput * lock + catchSlide));
+    c.steerAngle += (steerTarget - c.steerAngle) * Math.min(1, dt * (16 - 9 * Math.min(1, pace / 60)));
+
+    // The handbrake (Space) locks the rear wheels: they slide instead of gripping, and the tail comes round
     const handbrake = !dead && !!this.keys.up && Math.hypot(c.speed, c.vx, c.vz) > 2;
-    if (handbrake) c.speed = Math.sign(c.speed) * Math.max(0, Math.abs(c.speed) - ENVISION.handbrake * dt);
-    const momentumX = Math.sin(c.heading) * c.speed + c.vx;
-    const momentumZ = Math.cos(c.heading) * c.speed + c.vz;
-    const moving = Math.hypot(momentumX, momentumZ);
-    if (moving > 0.2) {
-      // (it turns with its momentum, so a handbrake turn keeps swinging round while the car slides sideways)
-      const dirSign = c.speed < -0.5 && !handbrake ? -1 : 1;
-      const speedFactor = Math.min(1.0, moving / 5.0);
-      c.heading += c.steerAngle * (handbrake ? 4.6 : 2.9) * speedFactor * dirSign * dt;
+    if (handbrake) state.u = Math.sign(state.u) * Math.max(0, Math.abs(state.u) - ENVISION.handbrake * grip * dt);
+    // Without Shift the traction control keeps the driven wheels from taking more than most of the rear tyres' grip;
+    // floored (Shift), all of it can go into wheelspin, and the tail with it
+    const driving = !braking && pedal > 0;
+    const drive = driving && !this.keys.boost ? Math.sign(acceleration) * Math.min(Math.abs(acceleration), 5.6 * grip) : acceleration;
+    const tyres = carHandling(state, c.steerAngle, drive, driving, handbrake, grip, dt, handbrake || (this.keys.boost && driving) ? 0 : 5);
+    // At a crawl the tyres simply hold the car: it rolls where its wheels point and settles at once
+    if (pace < 2.5) {
+      const hold = Math.exp(-dt * (2.5 - pace) * 9);
+      const rolling = (state.u * Math.tan(c.steerAngle)) / L;
+      state.r = rolling + (state.r - rolling) * hold;
+      state.v *= hold;
     }
-    c.heading += c.angularVel * dt; // collision spin
+    c.yawRate = state.r;
+    c.heading += (state.r + c.angularVel) * dt; // (+ the spin a collision left it with)
     c.angularVel *= Math.exp(-dt * 7.8);
-    const sinH = Math.sin(c.heading);
-    const cosH = Math.cos(c.heading);
-    c.speed = momentumX * sinH + momentumZ * cosH;
-    let lateral = momentumX * cosH - momentumZ * sinH; // the slide across the car (m/s), + to its left
-    // the tyres' sideways grip: firm at low speed, giving way at speed with the wheel turned hard, weaker still once
-    // sliding (and next to none with the rear locked)
-    const fast = Math.min(1, Math.max(0, (Math.abs(c.speed) - 9) / 22));
-    let grip = handbrake ? 0.9 : 14 - fast * Math.abs(c.steerAngle / 0.52) * 11;
-    if (Math.abs(lateral) > 4 && !handbrake) grip *= 0.55;
-    lateral *= Math.exp(-dt * grip);
-    c.speed *= Math.exp(-dt * Math.abs(lateral) * 0.035); // sliding scrubs off speed
-    c.vx = cosH * lateral;
-    c.vz = -sinH * lateral;
-    c.skid = Math.min(1, Math.abs(lateral) / 6);
+    c.speed = state.u;
+    const lateral = state.v; // the slide across the car (m/s), + to its left
+    c.vx = Math.cos(c.heading) * lateral;
+    c.vz = -Math.sin(c.heading) * lateral;
+    c.lateralG = tyres.ay / GRAVITY;
+    // How far past their grip the tyres are (0 gripping .. 1 fully sliding): the squeal, the rubber, the smoke
+    const beyond = Math.max(Math.abs(tyres.slipR), Math.abs(tyres.slipF) * 0.85) - 0.17;
+    c.skid = pace > 3 || Math.abs(lateral) > 2 ? Math.min(1, Math.max(handbrake ? 0.6 : 0, beyond / 0.24)) : 0;
+    // (for the rubber & smoke it leaves, car-effects.js: the rear locked, or spinning away from a standstill)
+    c.handbrake = handbrake;
+    c.launching = !dead && pedal > 0.95 && c.gear === 0 && pace < 9 && pace > 0.3;
 
     const prevX = c.position.x;
     const prevZ = c.position.z;
@@ -1233,14 +1349,38 @@ class ThirdPersonControllerManager {
     c.position.z += (Math.cos(c.heading) * c.speed + c.vz) * dt;
 
     this.resolveHorizontalCollision(c.position, 1.35, c.position.y + 1.0, c);
-    c.position.y = this.getGroundHeight(c.position.x, c.position.z, 'car', c.position.y);
+    // Each wheel stands on what is under it: the car climbs the curbs (a thump through the suspension, a little speed
+    // lost) and tilts with a wheel or two up on the sidewalk
+    const sn = Math.sin(c.heading);
+    const cs = Math.cos(c.heading);
+    const wheelY = c._wheelY || (c._wheelY = [0, 0, 0, 0]);
+    let groundSum = 0;
+    let kerb = 0;
+    for (let i = 0; i < 4; i++) {
+      const lx = i & 1 ? WHEEL_X : -WHEEL_X;
+      const lz = i & 2 ? -WHEEL_Z - 0.17 : WHEEL_Z - 0.17; // (the axles sit a little behind the body's middle)
+      const h = this.getGroundHeight(c.position.x + cs * lx + sn * lz, c.position.z - sn * lx + cs * lz, 'wheel', c.position.y);
+      if (Math.abs(h - wheelY[i]) > 0.08 && Math.abs(h - wheelY[i]) < 0.6) kerb += h - wheelY[i];
+      wheelY[i] = h;
+      groundSum += h;
+    }
+    const groundY = groundSum / 4;
+    if (kerb && Math.abs(c.speed) > 1) {
+      c.heaveVel += Math.max(-0.5, Math.min(1.1, kerb * 2.4 + Math.abs(kerb) * Math.abs(c.speed) * 0.05));
+      c.speed *= 0.985;
+    }
+    // (eased over a curb's height; a deck or ramp is followed exactly)
+    c.position.y = Math.abs(groundY - c.position.y) < 0.4 ? c.position.y + (groundY - c.position.y) * Math.min(1, dt * 18) : groundY;
+    const kerbPitch = -((wheelY[0] + wheelY[1]) - (wheelY[2] + wheelY[3])) / (4 * WHEEL_Z);
+    const kerbRoll = ((wheelY[1] + wheelY[3]) - (wheelY[0] + wheelY[2])) / (4 * WHEEL_X);
 
     // 3-DOF Spring-Damper Chassis Suspension (Pitch, Roll & Vertical Heave)
     // (soft and floaty: the body dives under braking, squats under power and leans hard into the corners & slides)
-    const targetPitch = -Math.max(-1, Math.min(1, acceleration / ENVISION.traction)) * 0.065;
-    const targetRoll = -c.steerAngle * Math.min(1, c.speed / 30) * 0.15 + Math.max(-1, Math.min(1, lateral / 10)) * 0.09;
-    const springK = 42.0;
-    const dampC = 6.2;
+    // (firm: about 2.5° of roll at 1 g of cornering, a degree and a half of dive under full braking)
+    const targetPitch = -Math.max(-1.3, Math.min(1.3, acceleration / GRAVITY)) * 0.028 + kerbPitch;
+    const targetRoll = Math.max(-1.4, Math.min(1.4, tyres.ay / GRAVITY)) * 0.045 + kerbRoll;
+    const springK = 90.0;
+    const dampC = 11.0;
     c.pitchVel += ((targetPitch - c.chassisPivot.rotation.x) * springK - c.pitchVel * dampC) * dt;
     c.rollVel += ((targetRoll - c.chassisPivot.rotation.z) * springK - c.rollVel * dampC) * dt;
     c.chassisPivot.rotation.x = Math.max(-0.22, Math.min(0.22, c.chassisPivot.rotation.x + c.pitchVel * dt));

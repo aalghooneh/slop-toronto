@@ -6,6 +6,19 @@ A downtown Toronto simulation built with [three.js](https://threejs.org/), WebGP
 
 The city is built from the real geography: every street, block and park where it really is, the real skyline (every building of 40 m and up at its true outline and height), the CN Tower, the Rogers Centre, both City Halls, Union Station and the other landmarks, the elevated Gardiner Expressway, the Union Station Rail Corridor, the Toronto Islands, and the rest of the city along the lake.
 
+## Toronto Hustle
+
+There is a game to play on the city. Every way of getting about has its own work, and cash earns ranks:
+
+- **Drive: cab fares.** Stop in a yellow beacon, then get your fare where they're going before their patience runs out. Every fare is somebody (in a hurry, easygoing, a thrill-seeker, nervous) and tips accordingly. Drifts, near misses and flat-out runs pay on the side.
+- **Cycle: courier runs.** Collect an order at an orange beacon and deliver it while it's hot.
+- **Fly: skyline tours.** Thread the rings hung by the landmarks against the clock.
+- **Walk: the raccoon hunt.** Forty raccoons are raiding green bins all over downtown.
+
+The way there is routed along the real streets (one-ways included) and drawn on the road, the radar and the map. `G` turns the gigs on and off, `R` repairs the car, `T` steps through the weather: clear, rain (wet roads, less grip) and snow (which settles on the whole city).
+
+The car drives on a tyre model (`js/controllers.js`, `carHandling`): weight shifts under braking and power, the tyres give way past about 8° of slip, the handbrake locks the rear, and stability control keeps it pointing where it's going unless you floor it with `Shift`.
+
 ## Help build it
 
 This is an open project and it gets better with every Torontonian who touches it. You don't need to be a 3D expert: if you know the city, you can help.
@@ -54,6 +67,8 @@ Adding categories to `GROUPS` in that script (say, a neighbourhood's photos) is 
 The project code is available under the [MIT License](LICENSE).
 
 This project started as a fork of [mrdoob/slop-newyork](https://github.com/mrdoob/slop-newyork).
+
+The player's car is three.js's example model, "Ferrari 458 Italia" by [vicent091036](https://sketchfab.com/models/57bf6cc56931426e87494f554df1dab6) (`assets/ferrari.glb`); it keeps its author's licence, not this project's.
 
 Geographic data: © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright) (ODbL). Facade colours
 measured from Wikimedia Commons photos, credited in [`tools/data/commons_photos.md`](tools/data/commons_photos.md). Third-party data and dependencies retain their respective licenses.

@@ -84,6 +84,25 @@ class SpatialEmitter {
   }
 }
 
+// chime(): [seconds in, Hz, seconds long, level, waveform, glide to Hz]
+const CHIMES = {
+  accept: [[0, 660, 0.16], [0.09, 880, 0.22]],
+  boarded: [[0, 523, 0.14], [0.08, 659, 0.14], [0.16, 784, 0.3]],
+  cash: [[0, 1318, 0.09, 0.1, 'triangle'], [0.07, 1760, 0.09, 0.1, 'triangle'], [0.14, 2093, 0.1, 0.1, 'triangle'], [0.21, 2637, 0.5, 0.12, 'triangle'],
+    [0.21, 1318, 0.5, 0.06]],
+  late: [[0, 392, 0.2, 0.1, 'triangle'], [0.16, 330, 0.34, 0.1, 'triangle']],
+  fail: [[0, 311, 0.22, 0.11, 'triangle'], [0.18, 233, 0.26, 0.11, 'triangle'], [0.4, 175, 0.5, 0.12, 'triangle']],
+  style: [[0, 988, 0.07, 0.07], [0.05, 1480, 0.14, 0.07]],
+  ring: [[0, 784, 0.1, 0.1], [0.07, 1175, 0.28, 0.1]],
+  tick: [[0, 1040, 0.05, 0.06, 'square']],
+  rank: [[0, 523, 0.16, 0.11, 'triangle'], [0.13, 659, 0.16, 0.11, 'triangle'], [0.26, 784, 0.16, 0.11, 'triangle'], [0.39, 1047, 0.7, 0.13, 'triangle'],
+    [0.39, 523, 0.7, 0.07]],
+  // a raccoon's chitter: quick rising chirps
+  raccoon: [[0, 900, 0.06, 0.09, 'sawtooth', 1500], [0.08, 1000, 0.06, 0.09, 'sawtooth', 1700], [0.16, 950, 0.06, 0.09, 'sawtooth', 1600],
+    [0.26, 1200, 0.1, 0.09, 'sawtooth', 2100], [0.4, 1568, 0.3, 0.08, 'triangle']],
+  rustle: [[0, 700, 0.05, 0.035, 'sawtooth', 1100], [0.09, 760, 0.05, 0.035, 'sawtooth', 1250]]
+};
+
 class CityAudioSystem {
   constructor(simulation, { onStateChange = () => {} } = {}) {
     this.sources = new CityAudioSources(simulation);
@@ -388,6 +407,55 @@ class CityAudioSystem {
     const now = this.context.currentTime;
     if (now - this.lastHorn < 0.8) return;
     if (this.emit('horn', { id: entity, ...entity.position, heading: entity.heading, seed: 4 }, { intensity: 0.7 })) this.lastHorn = now;
+  }
+
+  // Rain on the street (weather.js): filtered noise, as loud as it is raining (0..1)
+  setRain(level) {
+    if (!this.ready || !this.context || this.context.state !== 'running') return;
+    if (!this.rain) {
+      if (level <= 0.01) return;
+      const context = this.context;
+      const buffer = context.createBuffer(1, context.sampleRate * 2, context.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+      const source = context.createBufferSource();
+      source.buffer = buffer;
+      source.loop = true;
+      const high = context.createBiquadFilter();
+      high.type = 'highpass';
+      high.frequency.value = 900;
+      const low = context.createBiquadFilter();
+      low.type = 'lowpass';
+      low.frequency.value = 6500;
+      const gain = context.createGain();
+      gain.gain.value = 0;
+      source.connect(high).connect(low).connect(gain).connect(this.mix);
+      source.start();
+      this.rain = { source, gain };
+    }
+    this.rain.gain.gain.setTargetAtTime(this.enabled ? level * 0.05 : 0, this.context.currentTime, 0.4);
+  }
+
+  // The game's own sounds (gigs.js), unplaced in the city: a few sine & triangle notes each, straight into the mix
+  chime(kind) {
+    if (!this.ready || !this.enabled || this.context?.state !== 'running' || document.hidden) return;
+    const tune = CHIMES[kind];
+    if (!tune) return;
+    const context = this.context;
+    const start = context.currentTime + 0.01;
+    for (const [at, frequency, length, level = 0.12, type = 'sine', slideTo = 0] of tune) {
+      const osc = context.createOscillator();
+      const gain = context.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(frequency, start + at);
+      if (slideTo) osc.frequency.exponentialRampToValueAtTime(slideTo, start + at + length);
+      gain.gain.setValueAtTime(0, start + at);
+      gain.gain.linearRampToValueAtTime(level, start + at + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0008, start + at + length);
+      osc.connect(gain).connect(this.mix);
+      osc.start(start + at);
+      osc.stop(start + at + length + 0.03);
+    }
   }
 
   update(dt, elapsed, camera, night = false) {

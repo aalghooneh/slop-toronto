@@ -1,6 +1,7 @@
 import * as THREE from 'three/webgpu';
 import { pass, mrt, output, normalView, positionView, metalness, roughness, vec2, smoothstep } from 'three/tsl';
 import { ssr } from 'three/addons/tsl/display/SSRNode.js';
+import { ao } from 'three/addons/tsl/display/GTAONode.js';
 import { createPostProcessing } from './post-processing.js';
 import { ClusteredLighting } from 'three/addons/lighting/ClusteredLighting.js';
 import { getLocationLabel, isTypingInField, ROADS, LANDMARKS, TELEPORT_LOCATIONS } from './city-config.js';
@@ -21,6 +22,14 @@ import { LightingSystem } from './lighting.js';
 import { CityMapSystem } from './city-map.js';
 import { setupSceneCulling, updateSceneCulling } from './scene-culling.js';
 import { CityAudioSystem } from './audio-system.js';
+import { createRouteFinder } from './route-finder.js';
+import { GigSystem } from './gigs.js';
+import { GigWorld } from './gig-world.js';
+import { GigHud } from './gig-hud.js';
+import { CarEffects } from './car-effects.js';
+import { WeatherSystem } from './weather.js';
+import { buildCranes } from './cranes.js';
+import { loadPlayerCar } from './player-car.js';
 
 // js/main.js
 // Main entry point for downtown Toronto in Three.js WebGPURenderer & TSL (three.js dev, see index.html)
@@ -85,6 +94,7 @@ async function initApp() {
   const cityBlocks = buildCityBlocks(scene);
   markInit('blocks');
   const towers = buildTowers(scene);
+  buildCranes(scene); // (the skyline's tower cranes)
   markInit('towers');
   const allColliders = [...landmarkColliders, ...cityBlocks.colliders, ...towers.colliders, ...surroundings.colliders, ...(cityGrid.colliders || [])];
 
@@ -105,6 +115,9 @@ async function initApp() {
 
   // 4. Initialize Third-Person Controllers (Person, Car, Cyclist, Helicopter) & Multi-Camera System
   const controllerManager = new ThirdPersonControllerManager(scene, allColliders);
+  // The player's car as a detailed model (player-car.js); the lofted one stays if it can't be fetched
+  if (loadingStatus) loadingStatus.textContent = 'Rolling the car out of the garage...';
+  await loadPlayerCar(controllerManager.entities.car);
   // Reuse teleport placement so saved players return at rest, close to their last positions.
   try {
     const saved = JSON.parse(localStorage.getItem('toronto-player-state'));
@@ -128,12 +141,63 @@ async function initApp() {
     } catch { /* Storage may be disabled or full. */ }
   }
 
+  // Toronto Hustle: the game played on the city (gigs.js), what it looks like in the streets (gig-world.js) and on
+  // screen (gig-hud.js). Its events also ring the audio system's chimes
+  let storage = null;
+  try { storage = window.localStorage; } catch { /* Progress isn't kept where storage is unavailable. */ }
+  const gigSounds = { accept: 'accept', boarded: 'boarded', arrived: 'tick', complete: 'cash', late: 'late', style: 'style', ring: 'ring', raccoon: 'raccoon', rank: 'rank' };
+  let gigWorld = null;
+  let gigHud = null;
+  let audioSystem = null;
+  const gigs = new GigSystem({
+    routeFinder: createRouteFinder(trafficSystem.network),
+    controllers: controllerManager,
+    traffic: trafficSystem,
+    storage,
+    // (the tours' rings hang clear of every roof around them)
+    roofAt: (x, z, r) => {
+      let top = 0;
+      for (const c of controllerManager.nearColliders(x, z, r)) {
+        if (c.maxY > top && x + r > c.minX && x - r < c.maxX && z + r > c.minZ && z - r < c.maxZ) top = c.maxY;
+      }
+      return top;
+    },
+    onEvent: (type, data) => {
+      gigWorld?.onEvent(type, data);
+      gigHud?.onEvent(type, data);
+      const sound = type === 'fail' ? (data.reason === 'left' ? 'late' : 'fail') : type === 'hit' ? null : gigSounds[type];
+      if (sound) audioSystem?.chime(sound);
+    }
+  });
+  // (raccoons sit in the open: clear of every building & landmark around them)
+  gigs.placeRaccoons((x, z, r) => {
+    for (const c of controllerManager.nearColliders(x, z, r)) {
+      if (x + r > c.minX && x - r < c.maxX && z + r > c.minZ && z - r < c.maxZ) return false;
+    }
+    return true;
+  });
+  gigWorld = new GigWorld(scene, gigs);
+  // Skid marks, tyre smoke & engine smoke from the player's car (car-effects.js)
+  const carEffects = new CarEffects(scene);
+  // Clear skies, rain or snow (weather.js)
+  const weather = new WeatherSystem(scene, lightingSystem);
+
   const cameraSystem = new CameraSystem(renderer.domElement, controllerManager);
   const touchControls = new TouchControls(controllerManager);
   const soundButton = document.getElementById('btn-sound');
-  const audioSystem = new CityAudioSystem({ controllerManager, trafficSystem, highwayTraffic, streetDetails }, {
+  audioSystem = new CityAudioSystem({ controllerManager, trafficSystem, highwayTraffic, streetDetails }, {
     onStateChange: updateSoundButton
   });
+  // Crashes are heard (audio-system.js) and felt by whoever is riding along (gigs.js)
+  for (const system of audioSystem.collisionSystems) {
+    system.setCollisionListener?.((impact) => {
+      audioSystem.onCollision(impact);
+      gigs.onCollision(impact);
+      // (and jolt the camera when it is the player's)
+      const me = controllerManager.getActiveEntity();
+      if (impact.a === me || impact.b === me) cameraSystem.shake((impact.speed - 2) / 16);
+    });
+  }
   function updateSoundButton() {
     if (!soundButton) return;
     soundButton.disabled = !audioSystem.supported;
@@ -210,7 +274,14 @@ async function initApp() {
   // Roughness mip blur must not spread reflections back onto matte or nonreflective surfaces.
   const reflectionMask = scenePassMetalRough.r.greaterThan(0).select(smoothstep(maxSSRRoughness, 0.55, scenePassMetalRough.g), 0);
   const reflections = ssrPass.mul(reflectionMask);
-  const colorGrade = createPostProcessing(renderer, scenePassColor, reflections);
+  // Ground-truth ambient occlusion from the scene pass's own depth & normals, at half resolution
+  const aoPass = ao(scenePassDepth, scenePassNormal, cameraSystem.camera);
+  aoPass.resolutionScale = 0.5;
+  aoPass.radius.value = 1.6; // metres: the foot of a wall, the underside of a car, a doorway
+  aoPass.distanceFallOff.value = 0.8;
+  aoPass.thickness.value = 1.2;
+  aoPass.samples.value = 8;
+  const colorGrade = createPostProcessing(renderer, scenePassColor, reflections, scenePassNormal, scenePassDepth, aoPass.getTextureNode());
   const renderPipeline = new THREE.RenderPipeline(renderer, colorGrade.outputNode);
 
   // 6. Wire UI Controls (Strictly using safe DOM APIs: textContent, classList, addEventListener)
@@ -249,12 +320,12 @@ async function initApp() {
   // Keyboard guide for each mode: [keys, action]
   const controlHints = {
     person: [[['W', 'S'], 'Walk'], [['A', 'D'], 'Turn'], [['Shift'], 'Sprint'], [['Space'], 'Jump'], [['Drag'], 'Orbit']],
-    car: [[['W', 'S'], 'Drive / Reverse'], [['A', 'D'], 'Steer'], [['Shift'], 'Floor it'], [['Space'], 'Handbrake'], [['B'], 'Horn'], [['Drag'], 'Orbit']],
-    cyclist: [[['W', 'S'], 'Pedal / Brake'], [['A', 'D'], 'Lean & Turn'], [['Shift'], 'Sprint'], [['Drag'], 'Orbit']],
-    helicopter: [[['W', 'S'], 'Pitch'], [['A', 'D'], 'Yaw'], [['Space', 'E'], 'Ascend'], [['Q', 'C'], 'Descend'], [['Shift'], 'Boost']]
+    car: [[['W', 'S'], 'Drive / Reverse'], [['A', 'D'], 'Steer'], [['Shift'], 'Floor it'], [['Space'], 'Handbrake'], [['R'], 'Repair']],
+    cyclist: [[['W', 'S'], 'Pedal / Brake'], [['A', 'D'], 'Lean & Turn'], [['Shift'], 'Sprint'], [['G'], 'Gigs'], [['Drag'], 'Orbit']],
+    helicopter: [[['W', 'S'], 'Pitch'], [['A', 'D'], 'Yaw'], [['Space', 'E'], 'Ascend'], [['Q', 'C'], 'Descend'], [['Shift'], 'Boost'], [['G'], 'Gigs']]
   };
-  // Top speeds in km/h (controllers.js: 8.2, 19 & 52 m/s; the car runs out of power against the air near 230): full scale of the speed meter
-  const topSpeedKmh = { person: 30, car: 230, cyclist: 68, helicopter: 187 };
+  // Top speeds in km/h (controllers.js: 8.2, 19 & 52 m/s; the car runs out of power against the air near 330): full scale of the speed meter
+  const topSpeedKmh = { person: 30, car: 330, cyclist: 68, helicopter: 187 };
 
   function renderControlHints(mode) {
     if (!elControlsHint) return;
@@ -389,6 +460,21 @@ async function initApp() {
     });
   });
 
+  // Weather: one button steps through clear, rain & snow (T)
+  const weatherButton = document.getElementById('btn-weather');
+  const weatherIcons = { clear: '#i-sun', rain: '#i-rain', snow: '#i-snow' };
+  function cycleWeather() {
+    const w = weather.cycle();
+    // (the colour grade follows the time of day; the wet look comes from the lighting)
+    if (!weatherButton) return;
+    weatherButton.querySelector('use').setAttribute('href', weatherIcons[w.id]);
+    weatherButton.setAttribute('aria-label', `Weather: ${w.name.toLowerCase()}`);
+    weatherButton.classList.toggle('is-open', w.id !== 'clear');
+    const label = document.getElementById('weather-label');
+    if (label) label.textContent = w.name;
+  }
+  weatherButton?.addEventListener('click', cycleWeather);
+
   // A mouse click mustn't leave the focus on a HUD button, or Space (jump / ascend) and Enter would press it again
   document.addEventListener('click', (e) => {
     const btn = e.target instanceof Element ? e.target.closest('button') : null;
@@ -441,6 +527,7 @@ async function initApp() {
   }
 
   function teleportTo(x, z, heading = Math.PI) {
+    if (gigs.job) gigs.fail('abandoned'); // (no teleporting a fare to their door)
     const destination = controllerManager.teleportActiveTo(x, z, heading);
     touchControls.reset();
     gamepadControls.reset();
@@ -484,6 +571,11 @@ async function initApp() {
 
   const openMapBtn = document.getElementById('btn-open-map');
   if (openMapBtn) openMapBtn.addEventListener('click', () => mapSystem.toggleFullMap(true));
+
+  // The maps draw the job in hand; the HUD shows it. (window.slop: a handle on the running game for the console)
+  mapSystem.gigs = gigs;
+  gigHud = new GigHud(gigs);
+  window.slop = { gigs, gigWorld, gigHud, controllerManager, cameraSystem, trafficSystem, mapSystem, audioSystem, scene, teleportTo };
 
   if (hudToggleBtn) {
     hudToggleBtn.addEventListener('click', () => {
@@ -538,6 +630,18 @@ async function initApp() {
         break;
       case 'KeyN':
         if (!e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) audioSystem.setEnabled(!audioSystem.enabled);
+        break;
+      case 'KeyT':
+        if (!e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) cycleWeather();
+        break;
+      case 'KeyG':
+        if (!e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey) gigs.setEnabled(!gigs.enabled);
+        break;
+      case 'KeyR':
+        if (!e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey && controllerManager.activeMode === 'car') gigs.repair();
+        break;
+      case 'Enter':
+        gigHud.closeIntro();
         break;
       case 'KeyB':
         if (!e.repeat && !e.metaKey && !e.ctrlKey && !e.altKey && !mapSystem.isFullMapOpen) audioSystem.honk(controllerManager.getActiveEntity());
@@ -652,6 +756,48 @@ async function initApp() {
   let frameCount = 0;
   let fpsTimer = 0;
   let nextPlayerSave = 0;
+  let nextRustle = 0;
+
+  // Resolution follows what the GPU can hold at a steady frame rate: up towards the display's own pixels (at most 2x)
+  // while there is headroom, down a step when frames start to drop. A step that proved too much isn't tried again for
+  // two minutes; the window after every change is ignored (the render targets are rebuilt)
+  const quality = {
+    ratio: 1, max: Math.min(window.devicePixelRatio || 1, 2), step: 0.25, time: 0, frames: 0, settle: 3, steady: 0, blocked: new Map()
+  };
+  Object.assign(window.slop, { quality, weather, lightingSystem, carEffects, renderer, colorGrade, aoPass });
+  function updateQuality(rawDt, now) {
+    const q = quality;
+    if (document.hidden || rawDt > 0.25) return;
+    if (q.settle > 0) {
+      q.settle -= rawDt;
+      q.time = q.frames = 0;
+      return;
+    }
+    q.time += rawDt;
+    q.frames++;
+    if (q.time < 1.5) return;
+    const fps = q.frames / q.time;
+    q.time = q.frames = 0;
+    let next = q.ratio;
+    if (fps < 52 && q.ratio > 1) {
+      q.blocked.set(q.ratio, now + 120000);
+      next = Math.max(1, q.ratio - q.step);
+      q.steady = 0;
+    } else if (fps > 57.5 && q.ratio < q.max) {
+      const up = Math.min(q.max, q.ratio + q.step);
+      // (two steady windows in a row before stepping up)
+      if (++q.steady >= 2 && !(q.blocked.get(up) > now)) next = up;
+    } else {
+      q.steady = 0;
+    }
+    if (next !== q.ratio) {
+      q.ratio = next;
+      q.steady = 0;
+      q.settle = 1.2;
+      renderer.setPixelRatio(next);
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+  }
   let warmedUp = false; // see the first frame below
 
   if (elFps) elFps.textContent = '60';
@@ -677,6 +823,28 @@ async function initApp() {
     );
     highwayTraffic.update(dt, cameraSystem.camera, controllerManager.getActiveEntity(), controllerManager.activeMode);
     streetcars.update(dt, elapsed, cameraSystem.camera, controllerManager.getActiveEntity(), controllerManager.activeMode);
+    // Toronto Hustle: the job in hand, its lights in the streets and its HUD
+    const player = controllerManager.getActiveEntity();
+    gigs.update(dt, controllerManager.activeMode);
+    gigWorld.update(dt, elapsed, cameraSystem.camera, player, controllerManager.activeMode);
+    gigHud.update(dt, player, controllerManager.activeMode, cameraSystem.camera);
+    // Weather: what falls, how it sounds, what it does to the road under the tyres
+    const daylight = Math.max(0.45, Math.min(1, 1.2 - lightingSystem.uNightFactor.value)); // (street lights catch the rain at night)
+    weather.update(dt, daylight);
+    carEffects.rain = weather.current.rain * weather.amount;
+    // (snow lies on whatever faces the sky: world up as the camera sees it, and the daylight left to light it)
+    colorGrade.snowCover.value = weather.cover;
+    const view = cameraSystem.camera.matrixWorldInverse.elements;
+    colorGrade.snowUp.value.set(view[4], view[5], view[6]);
+    colorGrade.snowAmbient.value = 0.05 + 0.4 * (1 - lightingSystem.uNightFactor.value) ** 2;
+    controllerManager.entities.car.gripScale = weather.grip;
+    audioSystem.setRain(weather.current.rain * weather.amount);
+    carEffects.update(dt, controllerManager.entities.car, controllerManager.activeMode === 'car', cameraSystem.camera);
+    // (a rustle now and then when a raccoon is close by)
+    if (gigs.raccoonNear < 32 && elapsed >= nextRustle) {
+      nextRustle = elapsed + 1.2 + gigs.raccoonNear * 0.08;
+      audioSystem.chime('rustle');
+    }
     if (!document.hidden && now >= nextPlayerSave) {
       savePlayerState();
       nextPlayerSave = now + 5000;
@@ -734,10 +902,17 @@ async function initApp() {
         console.log(`[init] ${initTimings.join(', ')}`);
         initTimings = null;
         if (loadingOverlay) loadingOverlay.classList.add('hidden');
+        gigHud.showIntro();
         audioSystem.ready = true;
         setLoadingProgress(1);
       });
     }
+
+    if (warmedUp) updateQuality(rawDt, now);
+    // The frame's edges streak at speed in the car (post-processing.js)
+    const fast = controllerManager.activeMode === 'car' && cameraSystem.getActivePreset().category === 'follow'
+      ? Math.min(1, Math.max(0, (Math.abs(player.speed) - 22) / 34)) : 0;
+    colorGrade.speed.value += (fast - colorGrade.speed.value) * Math.min(1, dt * 3);
 
     // Telemetry uses wall time, not the clamped simulation step, so slow frames and high-refresh displays report
     // their actual frame rate (updates DOM every 250ms).

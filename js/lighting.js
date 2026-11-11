@@ -173,11 +173,15 @@ class LightingSystem {
     this.uSkyExposure = uniform(0.148);
     this.uNightFactor = uniform(0.0);
     this.uNightSkyColor = uniform(new THREE.Color(0x0b1528));
+    this.uOvercast = uniform(0.0);
+    this.uOvercastColor = uniform(new THREE.Color(0x8d98a4));
     const rawSkyNode = this.sky.material.colorNode;
     this.sky.material.colorNode = Fn(() => {
       const raw = rawSkyNode;
       const dayCol = raw.rgb.mul(this.uSkyExposure);
-      const finalSky = mix(dayCol, this.uNightSkyColor, this.uNightFactor);
+      const clearSky = mix(dayCol, this.uNightSkyColor, this.uNightFactor);
+      // (rain & snow, see setWeather(): an even grey lid over the whole sky)
+      const finalSky = mix(clearSky, this.uOvercastColor, this.uOvercast);
       return vec4(finalSky, float(1.0));
     })();
 
@@ -263,12 +267,49 @@ class LightingSystem {
     this.scene.add(this.sky);
   }
 
+  // Rain or snow (weather.js) over whatever time of day it is: the sky clouds over, the sun all but goes, the haze
+  // closes in and the roads soak. `weather`: { rain: 0..1, snow: 0..1 }
+  setWeather(weather) {
+    this.weather = weather && (weather.rain || weather.snow) ? weather : null;
+    this.applyPreset(this.activePresetId, true);
+  }
+
   applyPreset(presetId, force = false) {
-    const p = TIME_PRESETS[presetId] || TIME_PRESETS.golden;
-    if (!force && this.activePresetId === p.id && this.envRenderTarget !== null) {
+    const base = TIME_PRESETS[presetId] || TIME_PRESETS.golden;
+    if (!force && this.activePresetId === base.id && this.envRenderTarget !== null) {
       return;
     }
-    this.activePresetId = p.id;
+    this.activePresetId = base.id;
+    let p = base;
+    if (this.weather) {
+      const { rain = 0, snow = 0 } = this.weather;
+      const wet = Math.max(rain, snow);
+      const day = 1 - base.nightFactor;
+      // an overcast sky is an even grey (brighter under snow); at night it glows a little with the city's lights
+      const grey = new THREE.Color(snow ? 0xb9c2cc : 0x8d98a4).multiplyScalar(0.25 + 0.75 * day);
+      const blend = (hex, k) => new THREE.Color(hex).lerp(grey, k).getHex();
+      p = {
+        ...base,
+        sunIntensity: base.sunIntensity * (1 - 0.8 * wet),
+        sunColor: blend(base.sunColor, 0.6 * wet),
+        hemiSky: blend(base.hemiSky, 0.7 * wet),
+        hemiGround: blend(base.hemiGround, 0.5 * wet),
+        hemiIntensity: base.hemiIntensity * (1 + 0.9 * snow + 0.6 * rain), // (the light of an overcast sky comes from all of it)
+        skyTop: blend(base.skyTop, 0.8 * wet),
+        skyHorizon: blend(base.skyHorizon, 0.8 * wet),
+        fogColor: blend(base.fogColor, 0.75 * wet),
+        fogDensity: base.fogDensity * (1 + 3.4 * rain + 5.2 * snow),
+        roadWetness: Math.max(base.roadWetness, rain ? 1 : 0.8),
+        interiorGlow: Math.max(base.interiorGlow, 0.78), // lights on indoors, headlights on
+        envIntensity: base.envIntensity * (1 - 0.15 * wet),
+        canyonBounce: base.canyonBounce * (1 - 0.5 * wet),
+        turbidity: 14,
+        rayleigh: base.rayleigh * 0.5,
+        cloudCoverage: 1,
+        cloudDensity: 1,
+        skyExposure: base.skyExposure * (1 - 0.3 * wet)
+      };
+    }
 
     this.sunLight.color.setHex(p.sunColor);
     this.sunLight.intensity = p.sunIntensity;
@@ -293,6 +334,13 @@ class LightingSystem {
     this.sky.sunPosition.value.copy(p.sunDir);
     this.uSkyExposure.value = p.skyExposure;
     this.uNightFactor.value = p.nightFactor;
+    if (this.weather) {
+      const day = 1 - base.nightFactor;
+      this.uOvercast.value = 0.92;
+      this.uOvercastColor.value.setHex(this.weather.snow ? 0xaab4bf : 0x77828e).multiplyScalar(0.05 + 0.5 * day * day);
+    } else {
+      this.uOvercast.value = 0;
+    }
 
     cityUniforms.uSunColor.value.setHex(p.sunColor);
     cityUniforms.uSkyTopColor.value.setHex(p.skyTop);
