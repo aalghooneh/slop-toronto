@@ -35,6 +35,7 @@ They also run automatically on every pull request.
 | `js/traffic.js`, `js/streetcars.js`, `js/pedestrians.js` | Cars, TTC streetcars and people |
 | `js/controllers.js`, `js/cameras.js` | Walking, driving, cycling, flying, and the cameras |
 | `js/gigs.js`, `js/gig-world.js`, `js/gig-hud.js`, `js/route-finder.js` | Toronto Hustle: the game's rules, its lights in the streets, its HUD, and the GPS routing |
+| `js/combat.js`, `js/police.js`, `js/action-fx.js`, `js/action-audio.js` | The car's turret & rockets, the wanted level & the police pursuit, explosions & gunfire as seen and heard |
 | `js/weather.js`, `js/car-effects.js`, `js/player-car.js`, `js/cranes.js` | Rain & snow, skid marks & smoke, the player's car model, the skyline's cranes |
 | `tools/` | Scripts that turn OpenStreetMap data into `js/toronto-geodata.js` |
 

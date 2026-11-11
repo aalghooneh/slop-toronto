@@ -4,7 +4,7 @@ import { ssr } from 'three/addons/tsl/display/SSRNode.js';
 import { ao } from 'three/addons/tsl/display/GTAONode.js';
 import { createPostProcessing } from './post-processing.js';
 import { ClusteredLighting } from 'three/addons/lighting/ClusteredLighting.js';
-import { getLocationLabel, isTypingInField, ROADS, LANDMARKS, TELEPORT_LOCATIONS } from './city-config.js';
+import { getLocationLabel, isTypingInField, blockAt, ROADS, LANDMARKS, TELEPORT_LOCATIONS } from './city-config.js';
 import { buildCityGrid } from './city-grid.js';
 import { buildSurroundings } from './surroundings.js';
 import { buildLandmarks } from './landmarks.js';
@@ -30,6 +30,10 @@ import { CarEffects } from './car-effects.js';
 import { WeatherSystem } from './weather.js';
 import { buildCranes } from './cranes.js';
 import { loadPlayerCar } from './player-car.js';
+import { ActionFX } from './action-fx.js';
+import { ActionAudio } from './action-audio.js';
+import { CombatSystem } from './combat.js';
+import { PoliceSystem } from './police.js';
 
 // js/main.js
 // Main entry point for downtown Toronto in Three.js WebGPURenderer & TSL (three.js dev, see index.html)
@@ -149,8 +153,10 @@ async function initApp() {
   let gigWorld = null;
   let gigHud = null;
   let audioSystem = null;
+  let police = null;
+  const routeFinder = createRouteFinder(trafficSystem.network);
   const gigs = new GigSystem({
-    routeFinder: createRouteFinder(trafficSystem.network),
+    routeFinder,
     controllers: controllerManager,
     traffic: trafficSystem,
     storage,
@@ -195,9 +201,58 @@ async function initApp() {
       gigs.onCollision(impact);
       // (and jolt the camera when it is the player's)
       const me = controllerManager.getActiveEntity();
-      if (impact.a === me || impact.b === me) cameraSystem.shake((impact.speed - 2) / 16);
+      if (impact.a !== me && impact.b !== me) return;
+      cameraSystem.shake((impact.speed - 2) / 16);
+      // (and what the police make of it, police.js: running somebody down, or driving into one of theirs)
+      const other = impact.a === me ? impact.b : impact.a;
+      if (!police || !other || controllerManager.activeMode !== 'car') return;
+      if (other.rig && impact.speed > 4) police.crime('pedestrian', 12, impact.x, impact.z);
+      else if (other.isNYPD && impact.speed > 3.5) police.crime('ram', 10, impact.x, impact.z);
     });
   }
+
+  // The armed car & the police it brings down on itself: the turret's guns & rockets and what they do to the city
+  // (combat.js), how that looks & sounds (action-fx.js, action-audio.js), the wanted level and the pursuit (police.js)
+  const groundAt = (x, z) => (blockAt(x, z) ? 0.22 : 0);
+  const actionFx = new ActionFX(scene, groundAt);
+  const actionAudio = new ActionAudio(audioSystem);
+  const combat = new CombatSystem({
+    scene, controllers: controllerManager, traffic: trafficSystem, cameraSystem, fx: actionFx, audio: actionAudio, groundAt,
+    onCrime: (kind, heat, x, z) => police.crime(kind, heat, x, z),
+    onPlayerWrecked: () => police.clear()
+  });
+  police = new PoliceSystem({
+    scene, controllers: controllerManager, traffic: trafficSystem, routeFinder, cameraSystem, combat, fx: actionFx, audio: actionAudio,
+    onEvent: (type, data) => {
+      if (type === 'collision') {
+        audioSystem.onCollision(data);
+        if (data.a === controllerManager.getActiveEntity()) {
+          cameraSystem.shake((data.speed - 2) / 14);
+          gigs.onCollision(data);
+        }
+      } else if (type === 'stars') {
+        const notes = ['Lose them: get out of their sight', 'More cruisers are on their way', 'They are shooting now', 'Every cruiser downtown is after you', 'Good luck'];
+        gigHud?.toast(`Wanted ${'★'.repeat(data.stars)}`, 'bad', notes[data.stars - 1]);
+        actionAudio.jingle(Array.from({ length: data.stars }, (_, i) => [i * 0.09, 660 + i * 110, 0.16, 0.1, 'square']));
+      } else if (type === 'evaded') {
+        const reward = data.stars * 150;
+        gigs.earn(reward, 'evaded');
+        gigHud?.showPayout('Evaded', `+$${reward}`, `${data.stars}-star pursuit shaken off`, data.stars, 'good');
+        actionAudio.jingle([[0, 523, 0.14], [0.12, 659, 0.14], [0.24, 784, 0.3]]);
+      } else if (type === 'busted') {
+        const fine = Math.min(gigs.cash, data.stars * 150);
+        if (gigs.job) gigs.fail('abandoned');
+        if (fine) gigs.spend(fine);
+        controllerManager.restartCar();
+        cameraSystem.resetForTeleport();
+        gigHud?.showPayout('Busted', fine ? `−$${fine}` : '$0', 'The car is back where the shift began', data.stars, 'bad', 4.2);
+        actionAudio.jingle([[0, 392, 0.2], [0.2, 311, 0.2], [0.4, 233, 0.5]]);
+      } else if (type === 'cruiser') {
+        gigHud?.toast('Cruiser destroyed', 'bad', `${data.count} so far`);
+      }
+    }
+  });
+  combat.police = police;
   function updateSoundButton() {
     if (!soundButton) return;
     soundButton.disabled = !audioSystem.supported;
@@ -320,7 +375,7 @@ async function initApp() {
   // Keyboard guide for each mode: [keys, action]
   const controlHints = {
     person: [[['W', 'S'], 'Walk'], [['A', 'D'], 'Turn'], [['Shift'], 'Sprint'], [['Space'], 'Jump'], [['Drag'], 'Orbit']],
-    car: [[['W', 'S'], 'Drive / Reverse'], [['A', 'D'], 'Steer'], [['Shift'], 'Floor it'], [['Space'], 'Handbrake'], [['R'], 'Repair']],
+    car: [[['W', 'A', 'S', 'D'], 'Drive'], [['Shift'], 'Floor it'], [['Space'], 'Handbrake'], [['F'], 'Guns'], [['X'], 'Rocket'], [['R'], 'Repair']],
     cyclist: [[['W', 'S'], 'Pedal / Brake'], [['A', 'D'], 'Lean & Turn'], [['Shift'], 'Sprint'], [['G'], 'Gigs'], [['Drag'], 'Orbit']],
     helicopter: [[['W', 'S'], 'Pitch'], [['A', 'D'], 'Yaw'], [['Space', 'E'], 'Ascend'], [['Q', 'C'], 'Descend'], [['Shift'], 'Boost'], [['G'], 'Gigs']]
   };
@@ -574,8 +629,9 @@ async function initApp() {
 
   // The maps draw the job in hand; the HUD shows it. (window.slop: a handle on the running game for the console)
   mapSystem.gigs = gigs;
+  mapSystem.police = police;
   gigHud = new GigHud(gigs);
-  window.slop = { gigs, gigWorld, gigHud, controllerManager, cameraSystem, trafficSystem, mapSystem, audioSystem, scene, teleportTo };
+  window.slop = { gigs, gigWorld, gigHud, controllerManager, cameraSystem, trafficSystem, mapSystem, audioSystem, scene, teleportTo, combat, police, actionFx };
 
   if (hudToggleBtn) {
     hudToggleBtn.addEventListener('click', () => {
@@ -805,7 +861,8 @@ async function initApp() {
   renderer.setAnimationLoop((now) => {
     const rawDt = (now - lastTime) * 0.001;
     lastTime = now;
-    const dt = Math.min(Math.max(rawDt, 0.001), 0.05);
+    // (a blast close by is seen in slow motion for a moment, combat.js)
+    const dt = Math.min(Math.max(rawDt, 0.001), 0.05) * combat.timeScale;
     elapsed += dt;
 
     // Update 3rd-person controllers, camera, signals, traffic & vehicle collisions, building LODs, and dynamic shadow focus
@@ -828,6 +885,9 @@ async function initApp() {
     gigs.update(dt, controllerManager.activeMode);
     gigWorld.update(dt, elapsed, cameraSystem.camera, player, controllerManager.activeMode);
     gigHud.update(dt, player, controllerManager.activeMode, cameraSystem.camera);
+    // The turret, what it hits, and the police that brings
+    combat.update(dt, controllerManager.activeMode, cameraSystem.camera);
+    police.update(dt, controllerManager.activeMode, cameraSystem.camera);
     // Weather: what falls, how it sounds, what it does to the road under the tyres
     const daylight = Math.max(0.45, Math.min(1, 1.2 - lightingSystem.uNightFactor.value)); // (street lights catch the rain at night)
     weather.update(dt, daylight);

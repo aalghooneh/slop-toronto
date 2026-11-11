@@ -145,7 +145,10 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
       dl: 0, dlv: 0, blink: 0, blinkPhase: Math.random() * 0.8,
       x: 0, z: 0, prevX: 0, prevZ: 0, tx: 0, tz: 1, nose: 0, yaw: 0, yawRate: 0, steer: 0,
       pitch: 0, roll: 0, pitchVel: 0, rollVel: 0, vx: 0, vz: 0, yawOffset: 0, yawVel: 0,
-      pAhead: Infinity, pRight: 0, pSpeed: 0, wheelSpin: Math.random() * Math.PI * 2
+      pAhead: Infinity, pRight: 0, pSpeed: 0, wheelSpin: Math.random() * Math.PI * 2,
+      // what the player's weapons do to it (combat.js): hit points, seconds since it blew up (0 = running), the fuse
+      // of one about to, and the hop & barrel roll the blast gives it
+      hp: bus ? 380 : 100, dead: 0, fuse: -1, y: 0, vy: 0, tumble: 0, tumbleVel: 0
     };
   }
 
@@ -1238,6 +1241,78 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
     }
   }
 
+  // ---------------------------------------------------------------------------------------------------------------
+  // Blown up by the player (combat.js): a vehicle out of hit points is thrown into the air by the blast, barrel-rolls
+  // and comes down on its wheels or its roof as a burnt-out wreck. It stays in its lane (the traffic queues behind
+  // it) until it is cleared away, out of sight if possible, and its slot goes back to the pool.
+  // ---------------------------------------------------------------------------------------------------------------
+  const WRECK_TIME = 26;
+  const BURNT = [Math.fround(0.028), Math.fround(0.026), Math.fround(0.025)];
+  function wreck(v, dt) {
+    v.dead += dt;
+    v.speed = v.acc = v.dlv = 0;
+    if (v.y > 0 || v.vy > 0) {
+      v.vy -= 21 * dt;
+      v.y += v.vy * dt;
+      v.tumble += v.tumbleVel * dt;
+      if (v.y <= 0) {
+        // lands: one heavy bounce, then it lies where it fell
+        if (v.vy < -4.5) {
+          reportCollision(v, network, v.x, 0.3, v.z, 0, 1, -v.vy);
+          spawnCollisionSparks(v.x, 0.2, v.z, v.tx, v.tz, -v.vy);
+          v.vy *= -0.3;
+          v.y = 0.01;
+          v.tumbleVel *= 0.45;
+        } else {
+          v.y = v.vy = v.tumbleVel = 0;
+        }
+      }
+    } else {
+      const rest = Math.round(v.tumble / Math.PI) * Math.PI;
+      v.tumble += (rest - v.tumble) * Math.min(1, dt * 9);
+    }
+    if (v.dead > WRECK_TIME + 18 || (v.dead > WRECK_TIME && hasView && !visible(v.x, v.z, 12))) {
+      v.edge = null;
+      return true;
+    }
+    return false;
+  }
+
+  // Takes `amount` off a vehicle's hit points; true once it has none left (combat.js then lights its fuse)
+  function damageVehicle(v, amount) {
+    if (!v.edge || v.dead) return false;
+    v.hp -= amount;
+    return v.hp <= 0;
+  }
+
+  // Blows a vehicle up, thrown along (nx, nz); false if it already was
+  function destroyVehicle(v, nx = 0, nz = 0) {
+    if (!v.edge || v.dead) return false;
+    v.dead = 0.001;
+    v.hp = 0;
+    v.speed = 0;
+    if (!v.bus) {
+      v.y = 0.01;
+      v.vy = 6.5 + Math.random() * 4.5;
+      v.tumbleVel = (Math.random() < 0.5 ? -1 : 1) * (2.6 + Math.random() * 4.2);
+    }
+    v.vx += nx * (v.bus ? 2 : 7);
+    v.vz += nz * (v.bus ? 2 : 7);
+    v.yawVel += (Math.random() - 0.5) * (v.bus ? 1.5 : 7);
+    return true;
+  }
+
+  // A shove from a blast or a ramming police car: knock velocity (m/s) and a spin
+  function pushVehicle(v, ix, iz, spin = 0) {
+    if (!v.edge) return;
+    const k = v.bus ? 0.25 : 1;
+    v.vx += ix * k;
+    v.vz += iz * k;
+    v.yawVel += spin * k;
+    v.rollVel += (iz * v.tx - ix * v.tz) * 0.3 * k;
+    if (!v.dead) v.speed *= 0.5;
+  }
+
   // Physical 4-axis 2D SAT OBB test between a vehicle (half extents halfW x halfL, heading rotY) and the player.
   // Returns the minimum translation axis (pointing from the vehicle towards the player), or null if they don't overlap.
   const satHit = { nx: 0, nz: 0, pen: 0, localX: 0, localZ: 0, pSin: 0, pCos: 1 };
@@ -1396,6 +1471,9 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
     v.acc = 0;
     v.dl = v.dlv = 0;
     v.vx = v.vz = v.yawOffset = v.yawVel = v.pitch = v.pitchVel = v.roll = v.rollVel = 0;
+    v.hp = v.bus ? 380 : 100;
+    v.dead = v.y = v.vy = v.tumble = v.tumbleVel = 0;
+    v.fuse = -1;
     locate(v);
     v.prevX = v.x;
     v.prevZ = v.z;
@@ -1551,7 +1629,7 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
       p.pause = 1.5 + Math.random() * 3;
       p.restTime = clock + 35 + Math.random() * 55;
     }
-    let vMax = p.pause > 0 || p.conversation ? 0 : p.speed;
+    let vMax = p.pause > 0 || p.conversation ? 0 : p.panic > clock ? p.speed * 2.7 : p.speed;
     if (!p.nextRoute) vMax = Math.min(vMax, Math.sqrt(2 * PED_BRAKE * ahead));
     let room = Infinity;
     if (!p.node && p.nextRoute) {
@@ -1751,8 +1829,10 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
     const bodyInst = near ? bodies[c.bodyType].near : bodies[c.bodyType].far;
     const slot = bodyInst.count++;
 
-    dummy.position.set(c.x, 0.0, c.z);
-    dummy.rotation.set(c.pitch, rotY, c.roll, 'YXZ');
+    // (a wreck may be in the air, rolling, or on its roof: the body turns about its middle)
+    const dead = c.dead > 0;
+    dummy.position.set(c.x, dead ? c.y + (1 - Math.cos(c.tumble)) * (c.isSUV ? 0.86 : 0.72) : 0.0, c.z);
+    dummy.rotation.set(c.pitch, rotY, c.roll + (dead ? c.tumble : 0), 'YXZ');
     dummy.scale.set(1, 1, 1);
     dummy.updateMatrix();
     bodyInst.setMatrixAt(slot, dummy.matrix);
@@ -1761,19 +1841,20 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
     const attrs = bodyInst.geometry.attributes;
     const paint = attrs.paintColor.array;
     const o3 = slot * 3;
-    if (paint[o3] !== c.paint[0] || paint[o3 + 1] !== c.paint[1] || paint[o3 + 2] !== c.paint[2]) {
-      paint[o3] = c.paint[0];
-      paint[o3 + 1] = c.paint[1];
-      paint[o3 + 2] = c.paint[2];
+    const coat = dead ? BURNT : c.paint; // (burnt black)
+    if (paint[o3] !== coat[0] || paint[o3 + 1] !== coat[1] || paint[o3 + 2] !== coat[2]) {
+      paint[o3] = coat[0];
+      paint[o3 + 1] = coat[1];
+      paint[o3 + 2] = coat[2];
       dirtyPaint.add(bodyInst);
     }
     const state = attrs.carState.array;
     const o4 = slot * 4;
     const blinkOn = c.blink !== 0 && (clock + c.blinkPhase) % 0.8 <= 0.4;
-    const b0 = c.acc < -0.8 || c.speed < 0.3 ? 1 : 0;
-    const b1 = blinkOn && c.blink < 0 ? 1 : 0;
-    const b2 = blinkOn && c.blink > 0 ? 1 : 0;
-    const b3 = c.isNYPD ? 1 : 0;
+    const b0 = !dead && (c.acc < -0.8 || c.speed < 0.3) ? 1 : 0;
+    const b1 = !dead && blinkOn && c.blink < 0 ? 1 : 0;
+    const b2 = !dead && blinkOn && c.blink > 0 ? 1 : 0;
+    const b3 = c.isNYPD && !dead ? 1 : 0;
     if (state[o4] !== b0 || state[o4 + 1] !== b1 || state[o4 + 2] !== b2 || state[o4 + 3] !== b3) {
       state[o4] = b0;
       state[o4 + 1] = b1;
@@ -1793,7 +1874,7 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
     const dxCam = c.x - camX;
     const dzCam = c.z - camZ;
     const distSq = dxCam * dxCam + dzCam * dzCam + camY * camY;
-    if (distSq < MAX_LIGHT_DIST_SQ) {
+    if (!dead && distSq < MAX_LIGHT_DIST_SQ) {
       const d = Math.sqrt(distSq);
       const forwardDot = dxCam * camFwdX + dzCam * camFwdZ;
       const effDist = d + Math.max(0, 5.0 - forwardDot) * 3.2;
@@ -1807,7 +1888,7 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
       }
     }
 
-    if (near) {
+    if (near && !dead) {
       placeWheels(c, wheelCars++, rotY, c.roll, spec.wheelRadius, spec.wheelX, spec.wheelZ, carWheelLeftInst, carWheelRightInst);
     }
   }
@@ -1840,7 +1921,7 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
     const dxCam = b.x - camX;
     const dzCam = b.z - camZ;
     const distSq = dxCam * dxCam + dzCam * dzCam + camY * camY;
-    if (distSq < MAX_LIGHT_DIST_SQ) {
+    if (!b.dead && distSq < MAX_LIGHT_DIST_SQ) {
       const d = Math.sqrt(distSq);
       const forwardDot = dxCam * camFwdX + dzCam * camFwdZ;
       const effDist = d + Math.max(0, 5.0 - forwardDot) * 3.2;
@@ -2037,6 +2118,34 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
     if (speed > 2) reportCollision(pe, p, p.x, 1.0, p.z, -nx, -nz, speed);
   }
 
+  // Thrown off their feet by a bullet or a blast (combat.js) with the given velocity; `dead` ones don't get up.
+  // False if they were down already
+  function flingPed(p, vx, vy, vz, dead = false) {
+    if (!p.placed) return false;
+    if (p.knock && (p.knock.phase === 'rag' || p.knock.phase === 'down')) {
+      if (dead) p.knock.dead = true;
+      return false;
+    }
+    if (p.conversation) endConversation(p.conversation);
+    p.v = 0;
+    p.waiting = false;
+    p.rig.solve();
+    p.rag ??= new PersonRagdoll();
+    p.rag.start(p.rig, vx, vy, vz, vx * 0.7, vz * 0.7);
+    p.knock = { phase: 'rag', time: 0, still: 0, yaw: p.rig.yaw, x: p.x, z: p.z, car: false, dead };
+    return true;
+  }
+
+  // Gunfire or a blast at (x, z): everybody within r metres stops talking and runs for it
+  function scarePeds(x, z, r) {
+    for (const p of peds) {
+      if (!p.placed || p.knock || Math.abs(p.x - x) > r || Math.abs(p.z - z) > r) continue;
+      if (p.conversation) endConversation(p.conversation);
+      p.pause = 0;
+      p.panic = clock + 6 + Math.random() * 5;
+    }
+  }
+
   // One step of a knocked-down pedestrian; false once it is back on its feet where it left its walk
   function updateKnock(p, dt) {
     const k = p.knock;
@@ -2049,7 +2158,14 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
       k.still = p.rag.speed < 0.35 ? k.still + dt : 0;
       if (k.still > 0.8 || k.time > 10) { k.phase = 'down'; k.time = 0; }
     } else if (k.phase === 'down') {
-      if (k.time > 2.5 + (p.speed % 0.1) * 15) {
+      if (k.dead) {
+        // shot or caught in a blast: stays where it fell, and is somebody new elsewhere a while later
+        if (k.time > 18) {
+          p.knock = null;
+          p.placed = false;
+          return true;
+        }
+      } else if (k.time > 2.5 + (p.speed % 0.1) * 15) {
         // gets up facing the way its head lay
         k.phase = 'up';
         k.time = 0;
@@ -2205,8 +2321,12 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
 
       v.prevX = v.x;
       v.prevZ = v.z;
-      relateToPlayer(v);
-      drive(v, dt);
+      if (v.dead) {
+        if (wreck(v, dt)) continue; // (burnt out & cleared away)
+      } else {
+        relateToPlayer(v);
+        drive(v, dt);
+      }
       locate(v);
       knock(v, dt);
       pose(v, dt);
@@ -2305,8 +2425,16 @@ function createTrafficSystem(scene, sidewalks, obstacles) {
     setObstacles,
     cars,
     buses,
+    vehicles,
     peds,
-    network
+    network,
+    // (the player's weapons & the police, combat.js & police.js)
+    damageVehicle,
+    destroyVehicle,
+    pushVehicle,
+    flingPed,
+    scarePeds,
+    sparks: spawnCollisionSparks
   };
 }
 

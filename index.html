@@ -59,6 +59,10 @@
   <link rel="modulepreload" href="./js/weather.js" />
   <link rel="modulepreload" href="./js/cranes.js" />
   <link rel="modulepreload" href="./js/player-car.js" />
+  <link rel="modulepreload" href="./js/action-fx.js" />
+  <link rel="modulepreload" href="./js/action-audio.js" />
+  <link rel="modulepreload" href="./js/combat.js" />
+  <link rel="modulepreload" href="./js/police.js" />
   <link rel="modulepreload" href="./js/main.js" />
   <script type="module" src="./js/main.js"></script>
   <!-- Inter (UI) & Overpass (street-name signs: modelled on Highway Gothic, the US road sign typeface) -->
@@ -195,7 +199,7 @@
       <button id="mode-person" class="mode-btn" data-mode="person" type="button" title="Person [1]">
         <svg class="icon" aria-hidden="true"><use href="#i-walk"/></svg><span class="mode-label">Walk</span><kbd>1</kbd>
       </button>
-      <button id="mode-car" class="mode-btn active" data-mode="car" type="button" title="Car · V8 Coupé [2]">
+      <button id="mode-car" class="mode-btn active" data-mode="car" type="button" title="Car · Corvette C7 [2]">
         <svg class="icon" aria-hidden="true"><use href="#i-car"/></svg><span class="mode-label">Drive</span><kbd>2</kbd>
       </button>
       <button id="mode-cyclist" class="mode-btn" data-mode="cyclist" type="button" title="Cyclist [3]">
@@ -207,9 +211,16 @@
     </nav>
   </footer>
 
+  <!-- The armed car (combat.js) & the police (police.js): the wanted level, the turret's sights, a blast's flash -->
+  <div id="wanted" class="wanted" role="status" aria-label="Wanted level" data-state="chase" hidden>
+    <span class="wanted-star">★</span><span class="wanted-star">★</span><span class="wanted-star">★</span><span class="wanted-star">★</span><span class="wanted-star">★</span>
+  </div>
+  <div id="crosshair" class="crosshair" data-lock="off" aria-hidden="true" hidden><span></span></div>
+  <div id="fx-flash" class="fx-flash" aria-hidden="true"></div>
+
   <!-- Center: the car's wreck notice while it waits to restart -->
   <div id="hud-wrecked" class="wrecked" role="status" hidden>
-    <div class="wrecked-title">Wrecked</div>
+    <div class="wrecked-title">Wasted</div>
     <div class="wrecked-sub">Restarting in <span id="hud-wrecked-time">3</span>s</div>
   </div>
 
@@ -278,7 +289,7 @@
     <section id="hud-cluster" class="panel cluster" aria-label="Vehicle telemetry and camera">
       <div class="gauge">
         <div class="gauge-top">
-          <span id="hud-active-mode" class="gauge-label">V8 Coupé</span>
+          <span id="hud-active-mode" class="gauge-label">Corvette C7</span>
           <span class="gauge-alt"><span class="gauge-alt-label">Alt</span> <span id="hud-altitude">0</span> ft</span>
         </div>
         <div class="gauge-speed"><span id="hud-speed">0</span><span class="gauge-unit">km/h</span></div>
@@ -286,6 +297,10 @@
         <div class="gauge-health">
           <span class="gauge-health-label">Condition</span>
           <div class="gauge-meter" role="meter" aria-label="Car condition" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100" id="hud-health"><span id="hud-health-meter"></span></div>
+        </div>
+        <div id="weapons" class="weapons" aria-label="Weapons" hidden>
+          <span class="weapon"><kbd>F</kbd><span class="weapon-name">Guns</span></span>
+          <span class="weapon"><kbd>X</kbd><span class="weapon-name">Rockets</span><span id="weapon-rockets" class="weapon-pips" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></span></span>
         </div>
       </div>
       <div id="camera-switch" class="camera-switch">
@@ -318,6 +333,12 @@
       </button>
       <button class="touch-action" data-touch-action="down" type="button" aria-label="Descend" aria-pressed="false" hidden>
         <span aria-hidden="true">↓</span><span data-touch-label="down">Descend</span>
+      </button>
+      <button class="touch-action touch-fire" data-touch-action="rocket" type="button" aria-label="Rocket" aria-pressed="false" hidden>
+        <span aria-hidden="true">➶</span><span data-touch-label="rocket">Rocket</span>
+      </button>
+      <button class="touch-action touch-fire" data-touch-action="fire" type="button" aria-label="Guns" aria-pressed="false" hidden>
+        <span aria-hidden="true">✹</span><span data-touch-label="fire">Guns</span>
       </button>
       <button class="touch-action touch-boost" data-touch-action="boost" type="button" aria-label="Boost" aria-pressed="false">
         <span aria-hidden="true">↟</span><span data-touch-label="boost">Boost</span>

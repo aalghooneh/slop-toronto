@@ -469,6 +469,7 @@ class CityMapSystem {
     this.waypoint = { x: cn.x, z: cn.z, name: 'CN Tower' };
     // Toronto Hustle (gigs.js), set by main.js: its offers, the job's destination and the way there replace the waypoint
     this.gigs = null;
+    this.police = null; // (police.js, set by main.js: the cruisers after the player show on the radar)
 
     // Street names measured before the web font arrived would be spaced for the fallback font: measure & draw again
     if (document.fonts) {
@@ -1074,6 +1075,21 @@ class CityMapSystem {
         if (Math.abs(cx) < w * 0.5 && Math.abs(cy) < h * 0.5) {
           ctx.fillRect(cx - 1, cy - 1, 2, 2);
         }
+      }
+    }
+
+    // The pursuit (police.js): its cruisers, flashing red & blue
+    if (this.police && this.police.stars > 0) {
+      const blue = Math.floor(performance.now() / 180) % 2 === 0;
+      for (const u of this.police.units) {
+        if (!u.active || u.dead) continue;
+        const cx = toX(u.x);
+        const cy = toY(u.z);
+        if (Math.abs(cx) > w * 0.5 || Math.abs(cy) > h * 0.5) continue;
+        ctx.fillStyle = blue === (u.id % 2 === 0) ? '#4d8dff' : '#ff3b42';
+        ctx.beginPath();
+        ctx.arc(cx, cy, 3.2, 0, Math.PI * 2);
+        ctx.fill();
       }
     }
 

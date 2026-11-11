@@ -259,7 +259,9 @@ class ThirdPersonControllerManager {
       right: false,
       up: false,
       down: false,
-      boost: false
+      boost: false,
+      fire: false, // the car's turret guns & rockets (combat.js)
+      rocket: false
     };
 
     this.entities = {
@@ -313,7 +315,9 @@ class ThirdPersonControllerManager {
       right: ['KeyD', 'ArrowRight'],
       up: ['Space', 'KeyE'],
       down: ['KeyQ', 'KeyC'],
-      boost: ['ShiftLeft', 'ShiftRight']
+      boost: ['ShiftLeft', 'ShiftRight'],
+      fire: ['KeyF'],
+      rocket: ['KeyX']
     };
     const actionsByCode = new Map(Object.entries(bindings).flatMap(([action, codes]) => codes.map((code) => [code, action])));
     this._pressedCodes = new Set();
@@ -1251,6 +1255,14 @@ class ThirdPersonControllerManager {
       c.lastCrash = { time: now, speed };
     }
     c.health = Math.max(0, c.health - damage);
+    if (c.health === 0) c.wrecked = CRASH.wreckTime;
+  }
+
+  // Damage that isn't a crash (gunfire, a blast): `amount` straight off the car's health
+  hurtCar(amount) {
+    const c = this.entities.car;
+    if (c.wrecked > 0 || !(amount > 0)) return;
+    c.health = Math.max(0, c.health - amount);
     if (c.health === 0) c.wrecked = CRASH.wreckTime;
   }
 

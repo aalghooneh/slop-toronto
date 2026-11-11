@@ -15,6 +15,16 @@ There is a game to play on the city. Every way of getting about has its own work
 - **Fly: skyline tours.** Thread the rings hung by the landmarks against the clock.
 - **Walk: the raccoon hunt.** Forty raccoons are raiding green bins all over downtown.
 
+### Wanted
+
+The car (a Corvette C7) carries a turret on its roof: twin machine guns between two rocket pods. It looks where the camera looks (drag to aim) and locks on to whatever is in front of the sights; with the police on your tail it swings round to the nearest cruiser by itself. `F` fires the guns, `X` (or the right mouse button) a rocket: six in the pods, homing on what is locked, reloading one at a time.
+
+Cars have hit points. Out of them they blow up, are thrown into the air and burn where they land, and take the cars beside them along. Explosions shove everything around them, light up the street, shake and throw the camera, and are heard late from far away.
+
+All of it is a crime. Crimes are heat, and heat is stars, one to five: more cruisers and faster ones with every star, and from three they shoot. They take the streets while you are out of sight and come straight at you when you are not; if they hold you at a standstill you are busted (and fined). Break their line of sight and stay out of it until the stars stop blinking and you have got away, which pays $150 a star.
+
+The code: `js/combat.js` (the turret and what it hits), `js/police.js` (the wanted level and the pursuit), `js/action-fx.js` and `js/action-audio.js` (how it looks and sounds).
+
 The way there is routed along the real streets (one-ways included) and drawn on the road, the radar and the map. `G` turns the gigs on and off, `R` repairs the car, `T` steps through the weather: clear, rain (wet roads, less grip) and snow (which settles on the whole city).
 
 The car drives on a tyre model (`js/controllers.js`, `carHandling`): weight shifts under braking and power, the tyres give way past about 8° of slip, the handbrake locks the rear, and stability control keeps it pointing where it's going unless you floor it with `Shift`.
@@ -68,7 +78,7 @@ The project code is available under the [MIT License](LICENSE).
 
 This project started as a fork of [mrdoob/slop-newyork](https://github.com/mrdoob/slop-newyork).
 
-The player's car is three.js's example model, "Ferrari 458 Italia" by [vicent091036](https://sketchfab.com/models/57bf6cc56931426e87494f554df1dab6) (`assets/ferrari.glb`); it keeps its author's licence, not this project's.
+The player's car is "Chevrolet Corvette (C7)" by [Martin Trafas](https://sketchfab.com/3d-models/chevrolet-corvette-c7-2b509d1bce104224b147c81757f6f43a) (`assets/corvette.glb`, [CC BY 4.0](http://creativecommons.org/licenses/by/4.0/), slimmed down with `tools/slim-gltf.py`). Its stand-in if that doesn't load is three.js's example model, "Ferrari 458 Italia" by [vicent091036](https://sketchfab.com/models/57bf6cc56931426e87494f554df1dab6) (`assets/ferrari.glb`). Both keep their authors' licences, not this project's.
 
 Geographic data: © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright) (ODbL). Facade colours
 measured from Wikimedia Commons photos, credited in [`tools/data/commons_photos.md`](tools/data/commons_photos.md). Third-party data and dependencies retain their respective licenses.

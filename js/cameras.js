@@ -54,6 +54,11 @@ class CameraSystem {
     this.leanRoll = 0;
     this.fovKick = 0;
     this.trauma = 0;
+    // What an explosion does to it (see blast()): thrown back from the blast on a spring, the lens punched wide
+    this.kickOffset = new THREE.Vector3();
+    this.kickVel = new THREE.Vector3();
+    this.fovPunch = 0;
+    this.shakeSeed = Math.random() * 100;
     this._desiredPos = new THREE.Vector3();
     this._desiredLook = new THREE.Vector3();
 
@@ -150,6 +155,38 @@ class CameraSystem {
     if (Number.isFinite(amount)) this.trauma = Math.min(1, Math.max(this.trauma, amount));
   }
 
+  // The recoil of the car's guns: a little is added with every shot, up to a steady judder
+  recoil(amount, ceiling = 0.3) {
+    if (Number.isFinite(amount) && this.trauma < ceiling) this.trauma = Math.min(ceiling, this.trauma + amount);
+  }
+
+  // An explosion of the given power (1 = a car going up) at (x, y, z): the nearer, the harder the camera is shaken,
+  // and the pressure wave throws it back from the blast (it swings back on a spring) and punches the lens wide.
+  // Returns how hard it was hit, 0..1
+  blast(x, y, z, power = 1) {
+    const dx = this.camera.position.x - x;
+    const dy = this.camera.position.y - y;
+    const dz = this.camera.position.z - z;
+    const d = Math.hypot(dx, dy, dz);
+    const reach = 150 * Math.sqrt(power);
+    if (!(d < reach)) return 0;
+    const felt = Math.min(1, power * (1 - d / reach) ** 2.2 * 1.25);
+    this.shake(0.18 + felt * 0.82);
+    const push = felt * 9.5 / Math.max(d, 1.5);
+    this.kickVel.x += dx * push;
+    this.kickVel.y += Math.abs(dy) * push * 0.5 + felt * 2.4;
+    this.kickVel.z += dz * push;
+    this.fovPunch = Math.min(16, this.fovPunch + felt * 11);
+    return felt;
+  }
+
+  // The way the follow cameras look, over the ground (the car's turret aims along it, combat.js)
+  aimYaw(entity = this.controllerManager.getActiveEntity()) {
+    if (this.activePresetId === 'chase') return entity.heading + this.orbitYawOffset + this.slideYaw;
+    if (this.activePresetId === 'pov') return entity.heading + this.orbitYawOffset;
+    return entity.heading;
+  }
+
   resetOrbit() {
     this.orbitYawOffset = 0;
     this.orbitPitchOffset = 0.09;
@@ -163,7 +200,9 @@ class CameraSystem {
     this.isDragging = false;
     this.resetOrbit();
     this.smoothedSpeed = 0;
-    this.slideYaw = this.leanRoll = this.fovKick = this.trauma = 0;
+    this.slideYaw = this.leanRoll = this.fovKick = this.trauma = this.fovPunch = 0;
+    this.kickOffset.set(0, 0, 0);
+    this.kickVel.set(0, 0, 0);
     this.followEntity = null;
     this.followOffset.set(0, 0, 0);
     this.followLookOffset.set(0, 0, 0);
@@ -400,25 +439,51 @@ class CameraSystem {
     const perSpeed = entity.type === 'car' ? 0.26 : entity.type === 'helicopter' ? 0.12 : 0.3;
     const kick = follow ? Math.min(entity.type === 'car' ? 15 : 8, Math.max(0, this.smoothedSpeed - 6) * perSpeed) : 0;
     this.fovKick += (kick - this.fovKick) * (1 - Math.exp(-dt * 2.5));
-    const fov = preset.fov + this.fovKick;
+    this.fovPunch *= Math.exp(-dt * 5.5);
+    const fov = preset.fov + this.fovKick + this.fovPunch;
     if (Math.abs(fov - this.camera.fov) > 0.02) {
       this.camera.fov = fov;
       this.camera.updateProjectionMatrix();
     }
 
-    // Shudder: a fine rumble flat out, a jolt from a crash
-    this.trauma = Math.max(0, this.trauma - dt * 2.1);
+    // Shudder: a fine rumble flat out, a jolt from a crash, and the full treatment from an explosion. Trauma (0..1)
+    // dies away faster the less there is of it and is felt as its square: the camera is thrown about (not in step:
+    // each axis has its own mix of frequencies) and twisted in pitch, yaw & roll, which is what reads as a blow
+    // rather than a wobble. Crashes only reach the follow cameras; a blast shakes whichever camera sees it
+    this.trauma = Math.max(0, this.trauma - dt * (1.05 + this.trauma * 1.5));
     const rumble = follow && entity.type === 'car' ? Math.max(0, this.smoothedSpeed - 30) * 0.0011 : 0;
-    const jolt = follow ? this.trauma * this.trauma : 0;
+    const jolt = this.trauma * this.trauma;
+    // the blast's shove, on a damped spring
+    const kv = this.kickVel;
+    const ko = this.kickOffset;
+    kv.x += (-ko.x * 95 - kv.x * 13) * dt;
+    kv.y += (-ko.y * 95 - kv.y * 13) * dt;
+    kv.z += (-ko.z * 95 - kv.z * 13) * dt;
+    ko.set(ko.x + kv.x * dt, ko.y + kv.y * dt, ko.z + kv.z * dt);
+    const thrown = Math.hypot(ko.x, ko.y, ko.z);
+    if (thrown > 3) ko.set((ko.x * 3) / thrown, (ko.y * 3) / thrown, (ko.z * 3) / thrown);
+    this.camera.position.add(ko);
+    let twistX = 0;
+    let twistY = 0;
+    let twistZ = 0;
     if (rumble || jolt) {
-      const t = elapsed;
-      const a = rumble + jolt * 0.3;
-      this.camera.position.x += (Math.sin(t * 71.3) + Math.sin(t * 43.7 + 1.3)) * 0.5 * a;
-      this.camera.position.y += (Math.sin(t * 63.1 + 2.1) + Math.sin(t * 37.9)) * 0.5 * a;
-      this.camera.position.z += (Math.sin(t * 57.7 + 0.7) + Math.sin(t * 49.1 + 4.2)) * 0.5 * a;
+      const t = elapsed + this.shakeSeed;
+      const a = rumble + jolt * 0.42;
+      const wave = (f, p) => Math.sin(t * f + p) * 0.6 + Math.sin(t * f * 1.73 + p * 2.1) * 0.4;
+      this.camera.position.x += wave(71.3, 0.0) * a;
+      this.camera.position.y += wave(63.1, 2.1) * a * 0.8;
+      this.camera.position.z += wave(57.7, 0.7) * a;
+      twistX = wave(47.3, 4.2) * jolt * 0.036;
+      twistY = wave(41.9, 1.3) * jolt * 0.04;
+      twistZ = wave(53.0, 3.1) * jolt * 0.075;
     }
+    this.camera.position.y = Math.max(0.4, this.camera.position.y);
     this.camera.lookAt(this.currentLookAt);
-    const roll = this.leanRoll + (jolt ? Math.sin(elapsed * 53) * jolt * 0.02 : 0);
+    if ((twistX || twistY) && this.camera.rotateX) {
+      this.camera.rotateX(twistX);
+      this.camera.rotateY(twistY);
+    }
+    const roll = this.leanRoll + twistZ;
     if (roll && this.camera.rotateZ) this.camera.rotateZ(roll);
   }
 }

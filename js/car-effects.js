@@ -202,8 +202,8 @@ class CarEffects {
     if (active && car.handbrake && moving > 4) sliding = Math.max(sliding, 0.55);
     if (active && car.launching) sliding = Math.max(sliding, 0.4);
     const strength = sliding > 0 ? 0.25 + sliding * 0.6 : 0;
-    const wx = car.detailed ? 0.82 : spec.wheelX;
-    const wz = car.detailed ? -1.5 : -spec.wheelZ;
+    const wx = car.detailed ? car.rearTrack ?? 0.82 : spec.wheelX;
+    const wz = car.detailed ? car.rearAxleZ ?? -1.5 : -spec.wheelZ;
     for (let i = 0; i < 2; i++) {
       const side = i ? 1 : -1;
       const x = car.position.x + cos * side * wx + sin * wz;
@@ -241,7 +241,7 @@ class CarEffects {
       this.engineDebt += dt * (4 + hurt * 16);
       while (this.engineDebt >= 1) {
         this.engineDebt -= 1;
-        const front = car.detailed ? -1.5 : spec.zFront - 0.9; // (the detailed car's engine is behind the seats)
+        const front = car.detailed ? car.engineZ ?? -1.5 : spec.zFront - 0.9; // (wherever the detailed car's engine is)
         this.puffs.emit(car.position.x + sin * front + (Math.random() - 0.5) * 0.5, car.position.y + 1.0,
           car.position.z + cos * front + (Math.random() - 0.5) * 0.5,
           sin * car.speed * 0.5, 1.4 + Math.random(), cos * car.speed * 0.5, 1.4 + Math.random() * 0.8, 0.5, 2.6,
